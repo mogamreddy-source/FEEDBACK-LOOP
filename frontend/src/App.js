@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Link, useNavigate, useParams, Navigate, useLocation } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
-import { BarChart3, Building2, Check, ChevronRight, ClipboardList, Copy, ExternalLink, FilePlus2, LayoutDashboard, LogOut, MapPin, Menu, MessageSquare, Plus, RefreshCw, Settings, Smile, Sparkles, Star, Trash2, Users, X } from "lucide-react";
+import { BarChart3, Building2, Check, CheckCircle2, ChevronRight, Circle, CircleDot, ClipboardList, Copy, ExternalLink, FilePlus2, LayoutDashboard, ListTodo, LogOut, MapPin, Menu, MessageSquare, Plus, RefreshCw, Settings, Sparkles, Star, Trash2, Users, X } from "lucide-react";
 import axios from "axios";
 import "@/App.css";
 
@@ -61,6 +61,7 @@ function Shell({ user, children, onLogout }) {
     ["/dashboard", "Overview", LayoutDashboard],
     ["/templates", "Templates", ClipboardList],
     ["/responses", "Responses", MessageSquare],
+    ["/actions", "Actions", ListTodo],
     ["/analytics", "Analytics", BarChart3],
     ["/team", "Team", Users],
     ["/locations", "Locations", MapPin],
@@ -204,12 +205,12 @@ function Templates() {
   const [items, setItems] = useState([]);
   useEffect(() => { api.get("/templates").then(r => setItems(r.data)); }, []);
   return (
-    <>
+    <div className="templates-bg">
       <PageTitle eyebrow="Feedback library" title="Templates" desc="Create a focused way for customers to share what matters." action={<Link className="primary" to="/templates/new" data-testid="create-template-button"><Plus size={17} /> New template</Link>} />
       {items.length
         ? <div className="template-grid">{items.map(t => <TemplateCard key={t.id} t={t} />)}</div>
         : <div className="empty-large"><div className="empty-icon"><ClipboardList size={24} /></div><h3>You haven't created a feedback template yet.</h3><p>Start from a proven format or build your own questions.</p><Link className="primary" to="/templates/new" data-testid="empty-create-template"><Plus size={17} /> Create template</Link></div>}
-    </>
+    </div>
   );
 }
 function TemplateCard({ t }) {
@@ -437,15 +438,24 @@ function ResponseDetail() {
   const { id } = useParams();
   const [data, setData] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
-  const load = () => api.get(`/responses/${id}`).then(r => setData(r.data));
+  const [note, setNote] = useState("");
+  const [notes, setNotes] = useState([]);
+  const [noteError, setNoteError] = useState("");
+  const load = () => api.get(`/responses/${id}`).then(r => { setData(r.data); setNotes(r.data.response.notes || []); });
   useEffect(() => { load(); }, [id]);
   if (!data) return <Loading />;
   const r = data.response; const t = data.template; const ai = r.ai || {};
   const qmap = Object.fromEntries((t?.questions || []).map(q => [q.id, q]));
   const reanalyze = async () => { setRefreshing(true); await api.post(`/responses/${id}/reanalyze`); setTimeout(() => { load(); setRefreshing(false); }, 2500); };
+  const addNote = async e => {
+    e.preventDefault(); setNoteError("");
+    try { const r = await api.post(`/responses/${id}/notes`, { text: note }); setNotes([...notes, r.data]); setNote(""); }
+    catch (x) { setNoteError(errorText(x)); }
+  };
+  const deleteNote = async nid => { if (window.confirm("Delete this note?")) { await api.delete(`/responses/${id}/notes/${nid}`); setNotes(notes.filter(n => n.id !== nid)); } };
   return (
     <>
-      <PageTitle eyebrow="Customer response" title={t?.name || "Response"} desc={`Submitted ${new Date(r.submitted_at).toLocaleString()}`} action={<Link to="/responses" className="outline"><ChevronRight size={16} style={{ transform: "rotate(180deg)" }} /> All responses</Link>} />
+      <PageTitle eyebrow="Customer response" title={t?.name || "Response"} desc={`Submitted ${new Date(r.submitted_at).toLocaleString()}${data.location ? ` · ${data.location.name}` : ""}`} action={<Link to="/responses" className="outline"><ChevronRight size={16} style={{ transform: "rotate(180deg)" }} /> All responses</Link>} />
       <div className="detail-layout">
         <section className="section-panel detail-panel">
           {r.answers.map((a, i) => {
@@ -461,6 +471,23 @@ function ResponseDetail() {
               </div>
             );
           })}
+          <div className="notes-section" data-testid="notes-section">
+            <div className="panel-head"><div><p className="eyebrow">Team notes</p><h3>Private to your team</h3></div><MessageSquare size={16} /></div>
+            <div className="notes-list">
+              {notes.length ? notes.map(n => (
+                <div className="note-row" key={n.id} data-testid={`note-${n.id}`}>
+                  <div className="note-avatar">{n.user_name?.[0] || "T"}</div>
+                  <div className="note-body"><strong>{n.user_name}</strong><small>{new Date(n.created_at).toLocaleString()}</small><p>{n.text}</p></div>
+                  <button className="icon-btn danger" onClick={() => deleteNote(n.id)} data-testid={`delete-note-${n.id}`}><Trash2 size={13} /></button>
+                </div>
+              )) : <p className="muted notes-empty">No notes yet. Add a quick line so your team knows what you've done about this response.</p>}
+            </div>
+            <form onSubmit={addNote} className="note-form">
+              <textarea value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. Called the customer, offered a free dessert on their next visit." data-testid="note-input" />
+              {noteError && <div className="error">{noteError}</div>}
+              <button className="primary" disabled={!note.trim()} data-testid="add-note-button">Add note <ChevronRight size={14} /></button>
+            </form>
+          </div>
         </section>
         <aside className="section-panel ai-panel" data-testid="ai-panel">
           <div className="panel-head">
@@ -485,15 +512,34 @@ function ResponseDetail() {
 /* ===== Analytics ===== */
 function Analytics() {
   const [d, setD] = useState(null);
-  useEffect(() => { api.get("/analytics").then(r => setD(r.data)); }, []);
+  const [byLoc, setByLoc] = useState([]);
+  const [locations, setLocations] = useState([]);
+  const [filter, setFilter] = useState("");
+  const load = (locId) => {
+    const q = locId ? `?location_id=${locId}` : "";
+    api.get(`/analytics${q}`).then(r => setD(r.data));
+  };
+  useEffect(() => {
+    load("");
+    api.get("/locations").then(r => setLocations(r.data));
+    api.get("/analytics/by-location").then(r => setByLoc(r.data));
+  }, []);
+  useEffect(() => { load(filter); }, [filter]);
   if (!d) return <Loading />;
   const sent = d.sentiment || { positive: 0, neutral: 0, negative: 0 };
   const totalSent = sent.positive + sent.neutral + sent.negative;
   return (
     <>
-      <PageTitle eyebrow="Understand the signal" title="Analytics" desc="Simple patterns from the feedback you've collected." />
+      <PageTitle eyebrow="Understand the signal" title="Analytics" desc="Simple patterns from the feedback you've collected." action={
+        locations.length > 0 && (
+          <select className="loc-filter" value={filter} onChange={e => setFilter(e.target.value)} data-testid="analytics-location-filter">
+            <option value="">All locations</option>
+            {locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+          </select>
+        )
+      } />
       <div className="analytics-top">
-        <div className="metric"><span>Total responses</span><strong>{d.total}</strong><small>all time</small></div>
+        <div className="metric"><span>Total responses</span><strong>{d.total}</strong><small>{filter ? "this location" : "all time"}</small></div>
         <div className="metric"><span>Average rating</span><strong>{d.average || "—"}</strong><small>out of 5</small></div>
         <div className="metric"><span>5-star share</span><strong>{d.total ? Math.round(d.distribution[5] / d.total * 100) : 0}%</strong><small>of ratings</small></div>
       </div>
@@ -515,6 +561,24 @@ function Analytics() {
               </>}
         </section>
       </div>
+      {byLoc.length > 1 && (
+        <section className="section-panel location-breakdown" data-testid="location-breakdown">
+          <div className="panel-head"><div><p className="eyebrow">By location</p><h3>Where feedback is coming from</h3></div><MapPin size={18} /></div>
+          <div className="loc-grid">
+            {byLoc.map(b => (
+              <div className="loc-stat" key={b.location_id || "none"} data-testid={`loc-stat-${b.location_id || "none"}`}>
+                <div className="loc-stat-head"><MapPin size={14} /><strong>{b.location?.name || "Unassigned"}</strong></div>
+                <div className="loc-stat-nums"><span><b>{b.total}</b><small>responses</small></span><span><b>{b.average || "—"}</b><small>avg rating</small></span></div>
+                <div className="loc-stat-sent">
+                  <span className="dot pos"></span>{b.sentiment.positive}
+                  <span className="dot neu"></span>{b.sentiment.neutral}
+                  <span className="dot neg"></span>{b.sentiment.negative}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </>
   );
 }
@@ -680,6 +744,75 @@ function Locations() {
   );
 }
 
+/* ===== Actions ===== */
+function Actions() {
+  const [items, setItems] = useState([]);
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({ title: "", description: "" });
+  const [error, setError] = useState("");
+  const load = () => api.get("/actions").then(r => setItems(r.data));
+  useEffect(() => { load(); }, []);
+  const columns = [
+    ["open", "To do", Circle, "col-open"],
+    ["in_progress", "In progress", CircleDot, "col-progress"],
+    ["done", "Done", CheckCircle2, "col-done"],
+  ];
+  const move = async (id, status) => { await api.patch(`/actions/${id}`, { status }); load(); };
+  const assignSelf = async id => { await api.post(`/actions/${id}/assign`); load(); };
+  const remove = async id => { if (window.confirm("Delete this action?")) { await api.delete(`/actions/${id}`); load(); } };
+  const create = async e => {
+    e.preventDefault(); setError("");
+    try { await api.post("/actions", form); setForm({ title: "", description: "" }); setShowAdd(false); load(); }
+    catch (x) { setError(errorText(x)); }
+  };
+  return (
+    <>
+      <PageTitle eyebrow="One-tap actions" title="Actions" desc="Negative feedback becomes a card your team can pick up and resolve." action={<button className="primary" onClick={() => setShowAdd(!showAdd)} data-testid="toggle-add-action"><Plus size={17} /> {showAdd ? "Close" : "New action"}</button>} />
+      {showAdd && (
+        <section className="section-panel action-add-panel" data-testid="action-add-panel">
+          <form onSubmit={create}>
+            <label>Title<input required value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="Follow up with repeat complaint about wait times" data-testid="action-title-input" /></label>
+            <label>Description<textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Context, who to call, what to try..." data-testid="action-desc-input" /></label>
+            {error && <div className="error">{error}</div>}
+            <button className="primary" data-testid="action-create-button">Create action <ChevronRight size={16} /></button>
+          </form>
+        </section>
+      )}
+      {items.length === 0
+        ? <Empty icon={ListTodo} title="No actions yet." text="When a customer leaves negative feedback, we'll create an action card here automatically." />
+        : <div className="kanban" data-testid="kanban-board">
+            {columns.map(([key, label, Icon, cls]) => (
+              <div className={`kanban-col ${cls}`} key={key} data-testid={`kanban-${key}`}>
+                <div className="kanban-head"><Icon size={15} /><strong>{label}</strong><span>{items.filter(a => a.status === key).length}</span></div>
+                <div className="kanban-cards">
+                  {items.filter(a => a.status === key).map(a => (
+                    <article className="action-card" key={a.id} data-testid={`action-${a.id}`}>
+                      <div className="action-card-top">
+                        {a.source === "auto" && <span className="chip-auto"><Sparkles size={10} /> AI</span>}
+                        <button className="icon-btn danger" onClick={() => remove(a.id)} data-testid={`delete-action-${a.id}`}><Trash2 size={13} /></button>
+                      </div>
+                      <h4>{a.title}</h4>
+                      {a.description && <p>{a.description}</p>}
+                      <div className="action-foot">
+                        <span className="assignee">{a.assignee ? <><span className="assignee-dot">{a.assignee.full_name[0]}</span>{a.assignee.full_name}</> : <button className="link-btn" onClick={() => assignSelf(a.id)} data-testid={`claim-${a.id}`}>Claim</button>}</span>
+                        <div className="action-moves">
+                          {key !== "open" && <button className="pill" onClick={() => move(a.id, "open")} data-testid={`move-open-${a.id}`}>To do</button>}
+                          {key !== "in_progress" && <button className="pill" onClick={() => move(a.id, "in_progress")} data-testid={`move-progress-${a.id}`}>In progress</button>}
+                          {key !== "done" && <button className="pill" onClick={() => move(a.id, "done")} data-testid={`move-done-${a.id}`}>Done</button>}
+                        </div>
+                      </div>
+                      {a.response_id && <Link to={`/responses/${a.response_id}`} className="action-link">View response <ChevronRight size={11} /></Link>}
+                    </article>
+                  ))}
+                  {items.filter(a => a.status === key).length === 0 && <p className="kanban-empty">Nothing here.</p>}
+                </div>
+              </div>
+            ))}
+          </div>}
+    </>
+  );
+}
+
 /* ===== Settings ===== */
 function SettingsPage() {
   const [ws, setWs] = useState(null);
@@ -727,6 +860,7 @@ export default function App() {
                 <Route path="/templates/:id/publish" element={<PublishPage />} />
                 <Route path="/responses" element={<Responses />} />
                 <Route path="/responses/:id" element={<ResponseDetail />} />
+                <Route path="/actions" element={<Actions />} />
                 <Route path="/analytics" element={<Analytics />} />
                 <Route path="/team" element={<Team />} />
                 <Route path="/locations" element={<Locations />} />

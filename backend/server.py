@@ -20,6 +20,7 @@ EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 APP_BASE_URL = os.environ.get("APP_BASE_URL", "")
+WEBHOOK_CRON_SECRET = os.environ.get("WEBHOOK_CRON_SECRET", "")
 if RESEND_API_KEY: resend.api_key = RESEND_API_KEY
 log = logging.getLogger("feedback")
 
@@ -42,6 +43,9 @@ class ResponseIn(BaseModel): answers: List[AnswerIn]
 class InviteIn(BaseModel): email: EmailStr; role: Literal["editor", "viewer"] = "editor"
 class RoleUpdateIn(BaseModel): role: Literal["editor", "viewer"]
 class LocationIn(BaseModel): name: str = Field(min_length=1); address: str = ""; city: str = ""; phone: str = ""
+class NoteIn(BaseModel): text: str = Field(min_length=1, max_length=1000)
+class ActionStatusIn(BaseModel): status: Literal["open", "in_progress", "done"]
+class ActionCreateIn(BaseModel): title: str = Field(min_length=1, max_length=140); description: str = ""; response_id: Optional[str] = None
 
 # ---------- Auth helpers ----------
 async def current_user(request: Request):
@@ -220,6 +224,8 @@ async def analyze_sentiment(response_id: str, workspace_id: str, comment: str):
         if sentiment not in ("positive", "neutral", "negative"): sentiment = "neutral"
         payload = {"sentiment": sentiment, "confidence": float(data.get("confidence", 0)), "summary": str(data.get("summary", ""))[:200], "topics": [str(t)[:40] for t in (data.get("topics") or [])][:5], "analyzed_at": now()}
         await db.responses.update_one({"id":response_id, "workspace_id":workspace_id}, {"$set":{"ai": payload}})
+        if sentiment == "negative":
+            await auto_action(response_id, workspace_id, comment, payload["summary"] or comment[:80])
     except Exception as e:
         log.error(f"Sentiment analysis failed for {response_id}: {e}")
         await db.responses.update_one({"id":response_id}, {"$set":{"ai":{"sentiment":"unknown","error":str(e)[:120]}}})
@@ -291,9 +297,11 @@ async def reanalyze(response_id: str, background: BackgroundTasks, user=Depends(
     return {"ok":True}
 
 @api.get("/analytics")
-async def analytics(user=Depends(current_user)):
+async def analytics(location_id: Optional[str] = None, user=Depends(current_user)):
     ws = await active_workspace(user)
-    rs = [] if not ws else await db.responses.find({"workspace_id":ws["id"]},{"_id":0}).to_list(2000)
+    q = {"workspace_id":ws["id"]} if ws else None
+    if q and location_id: q["location_id"] = location_id
+    rs = [] if not ws else await db.responses.find(q,{"_id":0}).to_list(2000)
     dist = {str(i):0 for i in range(1,6)}; ratings=[]; sent={"positive":0,"neutral":0,"negative":0}
     topics_count = {}
     for r in rs:
@@ -309,6 +317,110 @@ async def analytics(user=Depends(current_user)):
             topics_count[topic] = topics_count.get(topic, 0) + 1
     top_topics = sorted(topics_count.items(), key=lambda x:-x[1])[:6]
     return {"total":len(rs),"distribution":dist,"average":round(sum(ratings)/len(ratings),1) if ratings else 0,"sentiment":sent,"topics":[{"name":k,"count":v} for k,v in top_topics]}
+
+@api.get("/analytics/by-location")
+async def analytics_by_location(user=Depends(current_user)):
+    """Returns per-location totals, average rating and sentiment breakdown."""
+    ws = await active_workspace(user)
+    if not ws: return []
+    locs = await db.locations.find({"workspace_id":ws["id"]},{"_id":0}).to_list(100)
+    rs = await db.responses.find({"workspace_id":ws["id"]},{"_id":0}).to_list(5000)
+    buckets = {l["id"]: {"location":l, "total":0, "ratings":[], "sentiment":{"positive":0,"neutral":0,"negative":0}} for l in locs}
+    buckets[None] = {"location":None, "total":0, "ratings":[], "sentiment":{"positive":0,"neutral":0,"negative":0}}
+    for r in rs:
+        b = buckets.get(r.get("location_id"), buckets[None])
+        b["total"] += 1
+        for a in r["answers"]:
+            try:
+                n = int(a["value"])
+                if 1<=n<=5: b["ratings"].append(n)
+            except (TypeError, ValueError): pass
+        s = (r.get("ai") or {}).get("sentiment")
+        if s in b["sentiment"]: b["sentiment"][s] += 1
+    out = []
+    for key, b in buckets.items():
+        if b["total"] == 0 and key is not None: continue  # hide empty named locations only
+        out.append({"location_id":key, "location":b["location"], "total":b["total"],
+                    "average":round(sum(b["ratings"])/len(b["ratings"]),1) if b["ratings"] else 0,
+                    "sentiment":b["sentiment"]})
+    return out
+
+# ---------- Actions (auto + manual) ----------
+async def auto_action(response_id: str, workspace_id: str, comment: str, summary: str):
+    """Create a one-tap action card for a negative response if one doesn't exist."""
+    if await db.actions.find_one({"response_id": response_id, "workspace_id": workspace_id, "source": "auto"}):
+        return
+    title = (summary or comment[:80]).strip().rstrip(".") or "Follow up on customer feedback"
+    if len(title) > 90: title = title[:87] + "…"
+    doc = {"id": str(uuid.uuid4()), "workspace_id": workspace_id, "response_id": response_id,
+           "title": f"Follow up: {title}", "description": comment[:400], "status": "open",
+           "assignee_id": None, "source": "auto", "created_at": now(), "updated_at": now()}
+    await db.actions.insert_one(doc)
+
+@api.get("/actions")
+async def list_actions(user=Depends(current_user)):
+    ws = await active_workspace(user)
+    if not ws: return []
+    items = []
+    async for a in db.actions.find({"workspace_id":ws["id"]},{"_id":0}).sort("created_at",-1):
+        assignee = await db.users.find_one({"id":a["assignee_id"]},{"_id":0,"password_hash":0}) if a.get("assignee_id") else None
+        items.append({**a, "assignee": assignee})
+    return items
+
+@api.post("/actions")
+async def create_action(data: ActionCreateIn, user=Depends(current_user)):
+    ws = await active_workspace(user); require_role(ws, "owner", "editor")
+    doc = {"id":str(uuid.uuid4()),"workspace_id":ws["id"],"response_id":data.response_id,
+           "title":data.title,"description":data.description,"status":"open","assignee_id":None,
+           "source":"manual","created_at":now(),"updated_at":now()}
+    await db.actions.insert_one(doc); return clean(doc)
+
+@api.patch("/actions/{action_id}")
+async def update_action_status(action_id: str, data: ActionStatusIn, user=Depends(current_user)):
+    ws = await active_workspace(user); require_role(ws, "owner", "editor")
+    result = await db.actions.update_one({"id":action_id,"workspace_id":ws["id"]},{"$set":{"status":data.status,"updated_at":now()}})
+    if result.matched_count == 0: raise HTTPException(404, "Action not found")
+    return {"ok":True}
+
+@api.post("/actions/{action_id}/assign")
+async def assign_action(action_id: str, user=Depends(current_user)):
+    """Assign the action to the current user (self-claim)."""
+    ws = await active_workspace(user); require_role(ws, "owner", "editor")
+    result = await db.actions.update_one({"id":action_id,"workspace_id":ws["id"]},{"$set":{"assignee_id":user["id"],"updated_at":now()}})
+    if result.matched_count == 0: raise HTTPException(404, "Action not found")
+    return {"ok":True}
+
+@api.delete("/actions/{action_id}")
+async def delete_action(action_id: str, user=Depends(current_user)):
+    ws = await active_workspace(user); require_role(ws, "owner", "editor")
+    result = await db.actions.delete_one({"id":action_id,"workspace_id":ws["id"]})
+    if result.deleted_count == 0: raise HTTPException(404, "Action not found")
+    return {"ok":True}
+
+# ---------- Response private notes ----------
+@api.get("/responses/{response_id}/notes")
+async def list_notes(response_id: str, user=Depends(current_user)):
+    ws = await active_workspace(user)
+    if not ws: return []
+    r = await db.responses.find_one({"id":response_id,"workspace_id":ws["id"]},{"_id":0,"notes":1})
+    if not r: raise HTTPException(404, "Response not found")
+    return r.get("notes", [])
+
+@api.post("/responses/{response_id}/notes")
+async def add_note(response_id: str, data: NoteIn, user=Depends(current_user)):
+    ws = await active_workspace(user); require_role(ws, "owner", "editor")
+    r = await db.responses.find_one({"id":response_id,"workspace_id":ws["id"]},{"_id":0,"id":1})
+    if not r: raise HTTPException(404, "Response not found")
+    note = {"id":str(uuid.uuid4()),"user_id":user["id"],"user_name":user["full_name"],"text":data.text.strip(),"created_at":now()}
+    await db.responses.update_one({"id":response_id},{"$push":{"notes":note}})
+    return note
+
+@api.delete("/responses/{response_id}/notes/{note_id}")
+async def delete_note(response_id: str, note_id: str, user=Depends(current_user)):
+    ws = await active_workspace(user); require_role(ws, "owner", "editor")
+    result = await db.responses.update_one({"id":response_id,"workspace_id":ws["id"]},{"$pull":{"notes":{"id":note_id}}})
+    if result.modified_count == 0: raise HTTPException(404, "Note not found")
+    return {"ok":True}
 
 # ---------- Locations ----------
 @api.get("/locations")
@@ -402,6 +514,75 @@ async def remove_member(member_id: str, user=Depends(current_user)):
     if result.deleted_count == 0: raise HTTPException(404, "Member not found")
     return {"ok":True}
 
+# ---------- Weekly digest cron ----------
+async def build_digest_html(ws, stats):
+    """Return a simple inline-styled HTML email body."""
+    sent = stats["sentiment"]; recent = stats["praises"]; attention = stats["attention"]
+    praise_html = "".join(f"<li style='margin:0 0 8px;color:#3f8564'>“{p[:200]}”</li>" for p in recent[:3]) or "<li style='color:#9aa9a3'>No standout praise this week.</li>"
+    att_html = "".join(f"<li style='margin:0 0 8px;color:#9d4e42'>“{a[:200]}”</li>" for a in attention[:3]) or "<li style='color:#9aa9a3'>Nothing flagged for attention — nice work.</li>"
+    return (f"<div style='font-family:Manrope,Arial,sans-serif;max-width:560px;margin:auto;padding:28px;color:#17352d'>"
+            f"<p style='font:600 10px \"DM Mono\";letter-spacing:1.25px;color:#7b9389;text-transform:uppercase;margin:0 0 10px'>Weekly digest · {ws['name']}</p>"
+            f"<h1 style='font-size:28px;letter-spacing:-1px;margin:0 0 18px'>Your week in customer feedback.</h1>"
+            f"<p style='color:#5a6e68;font-size:14px;line-height:1.7;margin:0 0 22px'>Here's what customers told you between {stats['start']} and {stats['end']}.</p>"
+            f"<div style='display:flex;gap:12px;margin:0 0 26px'>"
+            f"<div style='flex:1;background:#f5f7f4;border-radius:9px;padding:16px'><p style='margin:0;font-size:11px;color:#7b9389'>Responses</p><strong style='font-size:26px'>{stats['total']}</strong></div>"
+            f"<div style='flex:1;background:#f5f7f4;border-radius:9px;padding:16px'><p style='margin:0;font-size:11px;color:#7b9389'>Average rating</p><strong style='font-size:26px'>{stats['average'] or '—'}</strong></div>"
+            f"<div style='flex:1;background:#f5f7f4;border-radius:9px;padding:16px'><p style='margin:0;font-size:11px;color:#7b9389'>Positive · Attention</p><strong style='font-size:16px'>{sent['positive']} · <span style='color:#9d4e42'>{sent['negative']}</span></strong></div>"
+            f"</div>"
+            f"<h3 style='font-size:14px;margin:0 0 8px'>Top praise</h3><ul style='padding-left:18px;margin:0 0 22px;font-size:13px;line-height:1.6'>{praise_html}</ul>"
+            f"<h3 style='font-size:14px;margin:0 0 8px'>Needs attention</h3><ul style='padding-left:18px;margin:0 0 22px;font-size:13px;line-height:1.6'>{att_html}</ul>"
+            f"<p style='margin:0'><a href='{APP_BASE_URL}/dashboard' style='background:#17352d;color:#fff;padding:12px 20px;border-radius:7px;text-decoration:none;font-weight:800;font-size:13px'>Open workspace</a></p>"
+            f"<p style='color:#9aa9a3;font-size:11px;margin-top:24px'>You received this because you own this workspace on feedback/loop.</p></div>")
+
+async def run_weekly_digest(run_id: str):
+    """Build and send digest emails for every workspace. Dedupes via digest_runs."""
+    if await db.digest_runs.find_one({"run_id": run_id}):
+        log.info(f"[digest] run_id {run_id} already processed, skipping"); return
+    await db.digest_runs.insert_one({"run_id": run_id, "started_at": now()})
+    since = datetime.now(timezone.utc) - timedelta(days=7)
+    since_iso = since.isoformat()
+    workspaces = await db.workspaces.find({},{"_id":0}).to_list(1000)
+    sent_count = 0
+    for ws in workspaces:
+        owner = await db.users.find_one({"id":ws["owner_id"]},{"_id":0,"password_hash":0})
+        if not owner: continue
+        rs = await db.responses.find({"workspace_id":ws["id"],"submitted_at":{"$gte":since_iso}},{"_id":0}).to_list(2000)
+        if not rs: continue
+        ratings=[]; sent={"positive":0,"neutral":0,"negative":0}; praises=[]; attention=[]
+        for r in rs:
+            for a in r["answers"]:
+                try:
+                    n = int(a["value"])
+                    if 1<=n<=5: ratings.append(n)
+                except (TypeError, ValueError): pass
+            ai = r.get("ai") or {}; s = ai.get("sentiment")
+            if s in sent: sent[s] += 1
+            comment = next((a["value"] for a in r["answers"] if isinstance(a["value"], str) and len(a["value"]) > 20), "")
+            if s == "positive" and comment: praises.append(comment)
+            if s == "negative" and comment: attention.append(comment)
+        stats = {"total":len(rs),"average":round(sum(ratings)/len(ratings),1) if ratings else 0,
+                 "sentiment":sent,"praises":praises,"attention":attention,
+                 "start":since.strftime("%d %b"),"end":datetime.now(timezone.utc).strftime("%d %b")}
+        html = await build_digest_html(ws, stats)
+        ok = await send_email(owner["email"], f"Your weekly feedback — {ws['name']}", html)
+        await db.digest_sends.insert_one({"run_id":run_id,"workspace_id":ws["id"],"owner_email":owner["email"],"sent":ok,"total_responses":stats["total"],"at":now()})
+        if ok: sent_count += 1
+    await db.digest_runs.update_one({"run_id":run_id},{"$set":{"finished_at":now(),"workspaces_notified":sent_count}})
+    log.info(f"[digest] run {run_id} finished — notified {sent_count} workspaces")
+
+@api.post("/cron/weekly-digest")
+async def cron_weekly_digest(request: Request, background: BackgroundTasks):
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    auth = request.headers.get("Authorization", "")
+    if not WEBHOOK_CRON_SECRET or not auth.startswith("Bearer ") or not secrets.compare_digest(auth[7:], WEBHOOK_CRON_SECRET):
+        raise HTTPException(401, "unauthorized")
+    body = {}
+    try: body = await request.json()
+    except Exception: pass
+    run_id = request.headers.get("X-Webhook-Id") or (body.get("run_id") if isinstance(body, dict) else None) or str(uuid.uuid4())
+    background.add_task(run_weekly_digest, run_id)
+    return {"ok": True, "run_id": run_id}
+
 # ---------- App setup ----------
 app.include_router(api)
 app.add_middleware(CORSMiddleware, allow_origins=os.environ.get("CORS_ORIGINS","*").split(","), allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -416,5 +597,8 @@ async def indexes():
     await db.workspace_members.create_index([("workspace_id",1),("invite_email",1)])
     await db.responses.create_index([("workspace_id",1),("submitted_at",-1)])
     await db.locations.create_index("workspace_id")
+    await db.actions.create_index([("workspace_id",1),("status",1),("created_at",-1)])
+    await db.actions.create_index([("response_id",1),("source",1)])
+    await db.digest_runs.create_index("run_id", unique=True)
 @app.on_event("shutdown")
 async def shutdown(): client.close()
