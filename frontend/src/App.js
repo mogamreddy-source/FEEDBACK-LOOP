@@ -505,7 +505,7 @@ function Analytics() {
           </div>
           {!d.total && <p className="muted chart-empty">Analytics will appear after customers submit feedback.</p>}
         </section>
-        <section className="section-panel chart-panel ai-chart">
+        <section className="section-panel chart-panel ai-chart" data-testid="ai-chart">
           <div className="panel-head"><div><p className="eyebrow">AI sentiment</p><h3>What they said</h3></div><Sparkles size={18} /></div>
           {totalSent === 0
             ? <p className="muted chart-empty">Write-in feedback is auto-analyzed and summarized here.</p>

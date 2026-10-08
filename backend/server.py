@@ -136,7 +136,7 @@ def template_doc(data, ws, preset=None):
     source = preset or [(q.question_text, q.question_type) for q in data.questions]
     for i,(text,typ) in enumerate(source):
         questions.append({"id":str(uuid.uuid4()),"question_text":text,"question_type":typ,"required":True,"description":"","options":["Yes","No"] if typ=="yesno" else [],"sort_order":i})
-    return {"id":str(uuid.uuid4()),"workspace_id":ws["id"],"name":data.name,"description":data.description,"status":"DRAFT","public_slug":"","published_at":None,"questions":questions,"location_id":getattr(data,"location_id",None),"created_at":now(),"updated_at":now()}
+    return {"id":str(uuid.uuid4()),"workspace_id":ws["id"],"name":data.name,"description":data.description,"status":"DRAFT","public_slug":None,"published_at":None,"questions":questions,"location_id":getattr(data,"location_id",None),"created_at":now(),"updated_at":now()}
 
 @api.get("/templates")
 async def templates(user=Depends(current_user)):
@@ -410,7 +410,7 @@ async def root(): return {"message":"Customer Feedback Platform API"}
 @app.on_event("startup")
 async def indexes():
     await db.users.create_index("email", unique=True)
-    await db.templates.create_index("public_slug", unique=True, sparse=True)
+    await db.templates.create_index("public_slug", unique=True, partialFilterExpression={"public_slug":{"$type":"string"}})
     await db.login_attempts.create_index("identifier")
     await db.workspace_members.create_index("token", sparse=True)
     await db.workspace_members.create_index([("workspace_id",1),("invite_email",1)])

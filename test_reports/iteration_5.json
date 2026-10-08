@@ -1,0 +1,43 @@
+{
+  "summary": "Phase 2 backend + frontend verified. 8/8 pytest tests pass (seed demo login & counts, AI sentiment on submit + detail endpoint + reanalyze, dashboard/analytics sentiment & topics, team invites with roles, locations CRUD + nulling template location on delete, tenant isolation, plus prior MVP regressions). UI flows for /dashboard sentiment panel, /analytics, /responses filters + detail, /responses/{id} AI panel + reanalyze button, /locations CRUD, /team invite send and listing, and /invite/{token} public page all render and function correctly. Found and fixed one blocking schema bug.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/templates", "issue": "FIXED by sub-agent — DRAFT templates were inserted with public_slug=\"\" and the unique sparse index treated empty string as a value, so the SECOND draft template in the entire database raised DuplicateKeyError (500). Fix applied: template_doc now writes public_slug=None, and the index was recreated with partialFilterExpression {public_slug: {$type: 'string'}} so only published templates are indexed. Verified by creating multiple drafts across workspaces."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Analytics", "issues": ["The AI sentiment panel exists (class 'ai-chart') but has no data-testid=\"ai-chart\" attribute as declared in the testid contract; the testid list in the request promised one. Low priority — the panel renders fine."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase2.py",
+    "/app/backend/tests/test_feedback_flow.py",
+    "/app/test_reports/pytest/phase2_results.xml"
+  ],
+  "action_items": [
+    "Confirm the server.py template_doc + index change is acceptable (public_slug now null on DRAFT, partial unique index on string type). This is required — before the fix, no owner could keep more than one draft in the whole system.",
+    "(Optional) Add data-testid=\"ai-chart\" to the analytics section at /app/frontend/src/App.js line 508 to match the declared testid contract."
+  ],
+  "critical_code_review_comments": [
+    "Draft template schema wrote public_slug=\"\" against a unique sparse index — classic bug (sparse index does NOT skip empty strings, only missing fields). Fixed with partialFilterExpression. Recommend auditing similar patterns on workspace_members.token which also stores empty string on accept (currently fine because index is non-unique).",
+    "server.py file is 420 LOC in a single module. Still manageable, but routes for team/locations/responses should be split before adding more surface area.",
+    "analyze_sentiment catches Exception and stores ai.sentiment='unknown' with the error message — good resilience, but the error string is persisted to the DB which could leak internal details to a frontend consumer; consider masking.",
+    "/api/team/invites returns the invite link even when email_sent=false. That is the agreed behaviour while RESEND_API_KEY is unset, but mark this explicitly in the server docstring/README so it isn't shipped as-is to production."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (public_slug None + partialFilterExpression index)",
+    "/app/backend/tests/test_phase2.py (new Phase 2 regression suite)",
+    "/app/test_reports/pytest/phase2_results.xml"
+  ],
+  "success_rate": {"backend": "100% (8/8)", "frontend": "100% (dashboard sentiment panel, analytics panel + topics, responses filter pills + clickable rows, response detail AI panel + reanalyze, locations CRUD, team invite send + listing, public invite route all pass)"},
+  "test_credentials": "demo@example.com / Demo1234! (seeded via /app/backend/seed.py --fresh). All test users registered during the suite use test_* prefixed emails.",
+  "seed_data_creation": "Ran `python /app/backend/seed.py --fresh` which created demo owner, ABC Restaurant workspace, 2 locations, 1 published Restaurant Experience template with slug 'abc-restaurant-experience', and 8 pre-analyzed responses. Tests also created additional owners, templates, locations, invites and responses with test_* prefixes.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend Phase 2 regressions are in /app/backend/tests/test_phase2.py — run with REACT_APP_BACKEND_URL env and -o addopts= to disable xdist (xdist breaks the stateful seed+count check). The template unique-slug index was converted to a partial filter — if you need to rebuild indexes, drop public_slug_1 before restart to force the new definition. AI sentiment uses background tasks so poll /api/responses/{id} up to ~15s before asserting ai payload (handled in test).",
+  "rca of the issue": "RCA: MongoDB unique sparse indexes only skip documents where the indexed field is ABSENT, not where it is an empty string or null. server.py's template_doc inserted public_slug=\"\" on draft templates, so the first draft indexed as '', and every subsequent draft collided and returned HTTP 500. Reproduction: register user, create workspace, POST /api/templates twice without publishing — second call 500s with DuplicateKeyError on public_slug_1. Mitigation applied: store public_slug=None on draft, and rebuild the index as unique with partialFilterExpression {public_slug: {$type: 'string'}} so only strings are indexed. Verified via test_phase2.TestLocations and TestIsolation which both create unpublished templates after other tests already created drafts."
+}
