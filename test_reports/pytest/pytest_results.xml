@@ -1,3 +1,1 @@
-<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="2.752" timestamp="2026-10-08T05:33:38.483897+00:00" hostname="agent-env-1cf794a2-61ca-4f67-87a0-411e9572913e"><testcase classname="tests.test_feedback_flow" name="test_complete_feedback_flow" time="2.223"><failure message="assert 5.0 == 4.7">backend/tests/test_feedback_flow.py:36: in test_complete_feedback_flow
-    assert analytics.json()["average"] == 4.7
-E   assert 5.0 == 4.7</failure></testcase></testsuite></testsuites>
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="1" time="1.793" timestamp="2026-10-08T05:34:24.883218+00:00" hostname="agent-env-1cf794a2-61ca-4f67-87a0-411e9572913e"><testcase classname="tests.test_feedback_flow" name="test_complete_feedback_flow" time="1.134" /></testsuite></testsuites>

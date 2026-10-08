@@ -25,6 +25,7 @@ Build a realistic production-quality customer feedback SaaS POC proving the comp
 - 2026-10-08: Built template builder with question types, required flags, live preview, draft save, publish flow, random public slug, copyable URL, and real QR SVG.
 - 2026-10-08: Built public feedback page with rating, yes/no, short text, long text, validation, success state, relational answer records, response list, and analytics distribution.
 - 2026-10-08: Frontend production build and backend Python compilation pass.
+- 2026-10-08: Analytics aligned across dashboard and analytics endpoints; added environment-backed JWT secret and login attempt lockout.
 
 ## Prioritized backlog
 - P0: Validate complete register → workspace → template → publish → public response → dashboard analytics flow in browser/API tests.

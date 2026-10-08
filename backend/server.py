@@ -15,7 +15,7 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
 app = FastAPI(title="Customer Feedback Platform API")
 api = APIRouter(prefix="/api")
-JWT_SECRET = os.environ.get("JWT_SECRET", "feedback-poc-change-me")
+JWT_SECRET = os.environ["JWT_SECRET"]
 
 def now(): return datetime.now(timezone.utc).isoformat()
 def clean(doc):
@@ -56,9 +56,16 @@ async def register(data: RegisterIn, response: Response):
     return {"user": {k:v for k,v in user.items() if k not in ("password_hash", "_id")}, "access_token":access}
 
 @api.post("/auth/login")
-async def login(data: LoginIn, response: Response):
+async def login(data: LoginIn, response: Response, request: Request):
+    identifier = f"{request.client.host if request.client else 'unknown'}:{data.email.lower()}"
+    attempt = await db.login_attempts.find_one({"identifier":identifier}, {"_id":0})
+    if attempt and attempt.get("locked_until", "") > now(): raise HTTPException(429, "Too many attempts. Please try again in 15 minutes")
     user = await db.users.find_one({"email":data.email.lower()})
-    if not user or not verify_password(data.password, user["password_hash"]): raise HTTPException(401, "Incorrect email or password")
+    if not user or not verify_password(data.password, user["password_hash"]):
+        count=(attempt.get("count",0) if attempt else 0)+1
+        await db.login_attempts.update_one({"identifier":identifier},{"$set":{"identifier":identifier,"count":count,"locked_until":(datetime.now(timezone.utc)+timedelta(minutes=15)).isoformat() if count>=5 else ""}},upsert=True)
+        raise HTTPException(401, "Incorrect email or password")
+    await db.login_attempts.delete_one({"identifier":identifier})
     access = token(user["id"]); response.set_cookie("access_token", access, httponly=True, samesite="lax", max_age=604800)
     return {"user": {k:v for k,v in user.items() if k not in ("password_hash","_id")}, "access_token":access}
 
@@ -175,6 +182,6 @@ app.add_middleware(CORSMiddleware,allow_origins=os.environ.get("CORS_ORIGINS","*
 @app.get("/")
 async def root(): return {"message":"Customer Feedback Platform API"}
 @app.on_event("startup")
-async def indexes(): await db.users.create_index("email",unique=True); await db.templates.create_index("public_slug",unique=True,sparse=True)
+async def indexes(): await db.users.create_index("email",unique=True); await db.templates.create_index("public_slug",unique=True,sparse=True); await db.login_attempts.create_index("identifier")
 @app.on_event("shutdown")
 async def shutdown(): client.close()
