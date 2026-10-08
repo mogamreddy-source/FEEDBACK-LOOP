@@ -201,6 +201,8 @@ async def templates(user=Depends(current_user)):
     items = []
     async for t in db.templates.find({"workspace_id":ws["id"]},{"_id":0}):
         count = await db.responses.count_documents({"template_id": t["id"]})
+        t.setdefault("category", "General")
+        t.setdefault("design", DEFAULT_DESIGN.copy())
         items.append({**t, "response_count": count})
     return items
 

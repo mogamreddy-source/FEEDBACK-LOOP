@@ -1,0 +1,40 @@
+{
+  "summary": "Phase 4 Template Builder upgrade tested end-to-end against prod URL. Backend: 12/12 new pytest tests PASS in /app/backend/tests/test_template_builder.py — presets (5 with category/question_count/questions), /api/templates returns category+response_count+design, from-preset/Hotel Experience creates multichoice with options and category=Hospitality, PATCH persists design (primary_color/button_style) + singlechoice+multichoice options, duplicate -> DRAFT with new UUID + name '- Copy' + new question IDs + no public_slug, unpublish -> DRAFT, archive -> ARCHIVED+public_slug=null (slug 404s), /api/uploads rejects non-image 400 and accepts PNG with purpose query param storing in db.files, /api/files/{id} public and returns bytes with correct content-type, public_feedback payload exposes design with logo_url+background_url populated, multichoice list-value accepted, empty-array multichoice correctly rejected 400, regression Phase 1-3 endpoints still 200, cron auth 401/202. Frontend: 14-step happy-path Playwright flow PASSED — login, library tabs (All/Drafts/Published/Archived), Create picker with scratch + 5 preset cards, Restaurant preset loads into 3-tab builder, Design tab hex color (#c9622b) + pill button style + logo upload via /api/uploads, Preview viewport toggle (desktop/mobile), save+publish from builder, PublishPage shows public URL, incognito context loads /f/{slug} with primary color applied to submit button (verified rgb(201,98,43)), logo image rendered, 5-star rating + comment submit returns thank-you. Fixed one minor backend consistency bug.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/templates", "issue": "FIXED — pre-existing seeded templates were missing the `category` and `design` fields; the list endpoint did not backfill defaults like GET /{id} does, so the spec contract ('each template with category + design') failed for legacy rows. Added setdefault for both in the list loop. Verified by test_templates_include_response_count_and_design."},
+      {"endpoint": "GET /api/files/{file_id}", "issue": "Cache-Control: public,max-age=3600 set by backend is OVERRIDDEN to 'no-store, no-cache, must-revalidate' by the Cloudflare preview proxy. Image bytes still return correctly, but public asset caching is disabled in preview. Likely a prod-ingress config, not a backend bug — flagging for awareness."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_template_builder.py",
+    "/app/test_reports/pytest/phase4_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py now 733 LOC (was 605 last iteration). The uploads+storage layer, template routes, and digest routes should be split into submodules before another feature lands — the single-file layout is becoming a review hazard.",
+    "init_storage caches _storage_key for the process lifetime with no refresh/invalidation. If the proxy rotates the storage key or returns a transient failure after boot, every subsequent put/get will 401 silently until the pod restarts. Consider re-init on 401/403 from the storage proxy.",
+    "file_url relies on APP_BASE_URL env var; if it's missing or trailing-slash inconsistent, logo_url becomes '/api/files/{id}' (relative) and will not resolve when the public page is opened from a different origin (e.g., embedded). Add a hard assertion at startup or compute from request.base_url as a fallback.",
+    "GET /api/files/{file_id} serves the raw bytes with no size cap and no range support — a very large stored object would hold the worker thread for the entire download. Low risk since uploads are capped at 5MB, but worth noting.",
+    "Public /api/files/{id} has no is_deleted filter past the DB query, which is correct, but there is no code path that ever flips is_deleted:True — orphaned files from deleted/updated templates accumulate forever. Add a cleanup on template delete or a soft-delete endpoint.",
+    "App.js is now ~1082 LOC and bundles the entire app including BrandedFeedback renderer, Builder, Design tab, Library, Picker, PublishPage, Public page. This file should be code-split (at minimum Builder + BrandedFeedback into their own modules) before adding more surface area."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (templates list endpoint now backfills category+design for legacy docs)",
+    "/app/backend/tests/test_template_builder.py (new)",
+    "/app/test_reports/pytest/phase4_results.xml"
+  ],
+  "success_rate": {"backend": "100% (12/12 Phase 4 + Phase 1-3 regression endpoints)", "frontend": "100% (14/14 happy-path steps including incognito public submit)"},
+  "test_credentials": "demo@example.com / Demo1234! (idempotent seed via `python /app/backend/seed.py`)",
+  "seed_data_creation": "Did NOT run --fresh. Several TEST_* templates were created during pytest and torn down. One Restaurant Experience template was published during the Playwright flow and left behind along with one test response — safe to leave or re-seed. The frontend screenshot shows 2 drafts + 2 published + 0 archived.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Phase 4 pytest suite at /app/backend/tests/test_template_builder.py — run with `python -m pytest tests/test_template_builder.py -v -o addopts= --junitxml=/app/test_reports/pytest/phase4_results.xml` from /app/backend. Needs REACT_APP_BACKEND_URL (via dotenv-loaded /app/backend/.env fallback). TestUploadsAndFiles hits the live Emergent object storage so each run leaves ~2-3 real objects behind — acceptable for now. The one minor backend fix (templates list setdefault for category+design) is already applied in server.py.",
+  "rca of the issue": "GET /api/templates was returning legacy seed templates with no `category` or `design` fields because the list loop did not call `setdefault` (unlike the single-template GET). Reproduction: run the seeder on an empty DB, then call GET /api/templates — the Restaurant and Product Review rows came back without `category`. Mitigation applied: added `t.setdefault('category','General')` and `t.setdefault('design', DEFAULT_DESIGN.copy())` inside the list loop in server.py `@api.get('/templates')`. Verified via test_templates_include_response_count_and_design."
+}
