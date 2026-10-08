@@ -1,0 +1,8 @@
+crons:
+  - name: weekly-digest
+    description: "Sends workspace owners a Monday 9am UTC summary of last week's ratings, top praises, and attention items"
+    cron: "0 9 * * 1"
+    endpoint: "{{BASE_URL}}/api/cron/weekly-digest"
+    method: POST
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    enabled: true
