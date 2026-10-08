@@ -53,7 +53,7 @@ async def register(data: RegisterIn, response: Response):
     user = {"id":str(uuid.uuid4()), "full_name":data.full_name, "email":email, "password_hash":hash_password(data.password), "created_at":now()}
     await db.users.insert_one(user)
     access = token(user["id"]); response.set_cookie("access_token", access, httponly=True, samesite="lax", max_age=604800)
-    return {"user": {k:v for k,v in user.items() if k != "password_hash"}, "access_token":access}
+    return {"user": {k:v for k,v in user.items() if k not in ("password_hash", "_id")}, "access_token":access}
 
 @api.post("/auth/login")
 async def login(data: LoginIn, response: Response):
@@ -161,13 +161,14 @@ async def responses(user=Depends(current_user)):
 @api.get("/analytics")
 async def analytics(user=Depends(current_user)):
     ws=await owned_workspace(user); rs=[] if not ws else await db.responses.find({"workspace_id":ws["id"]},{"_id":0}).to_list(500); dist={str(i):0 for i in range(1,6)}
+    ratings=[]
     for r in rs:
         for a in r["answers"]:
             try:
                 n=int(a["value"])
-                if 1<=n<=5: dist[str(n)]+=1; break
+                if 1<=n<=5: dist[str(n)]+=1; ratings.append(n)
             except (TypeError, ValueError): pass
-    total=sum(dist.values()); return {"total":len(rs),"distribution":dist,"average":round(sum(int(k)*v for k,v in dist.items())/total,1) if total else 0}
+    return {"total":len(rs),"distribution":dist,"average":round(sum(ratings)/len(ratings),1) if ratings else 0}
 
 app.include_router(api)
 app.add_middleware(CORSMiddleware,allow_origins=os.environ.get("CORS_ORIGINS","*").split(","),allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
