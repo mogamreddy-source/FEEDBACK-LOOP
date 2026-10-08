@@ -57,7 +57,7 @@ async def register(data: RegisterIn, response: Response):
 
 @api.post("/auth/login")
 async def login(data: LoginIn, response: Response, request: Request):
-    identifier = f"{request.client.host if request.client else 'unknown'}:{data.email.lower()}"
+    identifier = data.email.lower()
     attempt = await db.login_attempts.find_one({"identifier":identifier}, {"_id":0})
     if attempt and attempt.get("locked_until", "") > now(): raise HTTPException(429, "Too many attempts. Please try again in 15 minutes")
     user = await db.users.find_one({"email":data.email.lower()})
