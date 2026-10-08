@@ -166,7 +166,7 @@ function Dashboard() {
             : <div className="sentiment-bars">
                 {[["positive", "Positive", "#54a978"], ["neutral", "Neutral", "#c1cec8"], ["negative", "Needs attention", "#d87567"]].map(([k, label, color]) => <div key={k} className="sentiment-bar"><span>{label}</span><div className="track"><div style={{ width: `${(sent[k] / totalSent) * 100}%`, background: color }} /></div><b>{sent[k]}</b></div>)}
               </div>}
-          <div className="focus-foot"><Sparkles size={13} /> Powered by Emergent LLM</div>
+          <div className="focus-foot"><Sparkles size={13} /> AI-assisted insights</div>
         </section>
       </div>
     </>
@@ -708,7 +708,7 @@ function ResponseDetail() {
                 {ai.confidence > 0 && <small className="ai-confidence">Confidence {Math.round(ai.confidence * 100)}%</small>}
               </>
             : <p className="muted">{refreshing ? "Analyzing with AI..." : "No written feedback to analyze, or analysis pending."}</p>}
-          <div className="focus-foot"><Sparkles size={13} /> Powered by Emergent LLM</div>
+          <div className="focus-foot"><Sparkles size={13} /> AI-assisted insights</div>
         </aside>
       </div>
     </>
