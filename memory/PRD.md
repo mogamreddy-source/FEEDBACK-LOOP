@@ -26,9 +26,10 @@ Build a realistic production-quality customer feedback SaaS POC proving the comp
 - 2026-10-08: Built public feedback page with rating, yes/no, short text, long text, validation, success state, relational answer records, response list, and analytics distribution.
 - 2026-10-08: Frontend production build and backend Python compilation pass.
 - 2026-10-08: Analytics aligned across dashboard and analytics endpoints; added environment-backed JWT secret and login attempt lockout.
+- 2026-10-08: Final end-to-end regression passed API persistence, tenant protection, lockout behavior, mobile onboarding, reload authentication, public feedback controls, and responsive layout.
 
 ## Prioritized backlog
-- P0: Validate complete register → workspace → template → publish → public response → dashboard analytics flow in browser/API tests.
+- P0: Complete register → workspace → template → publish → public response → dashboard analytics flow validated.
 - P1: Add true drag-and-drop reorder and question-level editing side panel.
 - P1: Add refresh-token rotation and server-side revocation records.
 - P2: Add response filters, response detail view, and workspace profile editing.

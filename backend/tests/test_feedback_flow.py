@@ -34,3 +34,14 @@ def test_complete_feedback_flow():
     analytics = s.get(f"{BASE_URL}/api/analytics", headers=auth)
     assert analytics.status_code == 200 and analytics.json()["total"] >= 1
     assert analytics.json()["average"] == 4.7
+
+
+def test_email_lockout_after_five_invalid_logins():
+    s = requests.Session()
+    email = f"lockout_{uuid.uuid4().hex}@example.com"
+    registered = s.post(f"{BASE_URL}/api/auth/register", json={"full_name": "Lockout Tester", "email": email, "password": "testing123"})
+    assert registered.status_code == 200
+    statuses = []
+    for _ in range(6):
+        statuses.append(s.post(f"{BASE_URL}/api/auth/login", json={"email": email, "password": "wrong-password"}).status_code)
+    assert statuses == [401, 401, 401, 401, 401, 429]
