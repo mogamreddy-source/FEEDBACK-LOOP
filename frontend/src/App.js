@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Link, useNavigate, useParams, Navigate, useLocation } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
-import { BarChart3, Building2, Check, CheckCircle2, ChevronRight, Circle, CircleDot, ClipboardList, Copy, ExternalLink, FilePlus2, LayoutDashboard, ListTodo, LogOut, MapPin, Menu, MessageSquare, Plus, RefreshCw, Settings, Sparkles, Star, Trash2, Users, X } from "lucide-react";
+import { Archive, BarChart3, Building2, Check, CheckCircle2, ChevronRight, Circle, CircleDot, ClipboardList, Copy, ExternalLink, Eye, FilePlus2, Image as ImageIcon, LayoutDashboard, ListTodo, LogOut, MapPin, Menu, MessageSquare, Monitor, Palette, Plus, RefreshCw, Settings, Smartphone, Sparkles, Star, Trash2, Upload, Users, X } from "lucide-react";
 import axios from "axios";
 import "@/App.css";
 
@@ -201,121 +201,360 @@ function Onboarding() {
 }
 
 /* ===== Templates list ===== */
+/* ===== Templates library ===== */
+const DEFAULT_DESIGN = { logo_file_id: null, background_file_id: null, background_color: "#f5f7f4", primary_color: "#17352d", text_color: "#17352d", card_background: "#ffffff", button_style: "rounded" };
+const fileUrl = id => id ? `${API}/files/${id}` : null;
+const STATUS_TABS = [["all","All templates"],["DRAFT","Drafts"],["PUBLISHED","Published"],["ARCHIVED","Archived"]];
+
 function Templates() {
+  const nav = useNavigate();
   const [items, setItems] = useState([]);
-  useEffect(() => { api.get("/templates").then(r => setItems(r.data)); }, []);
+  const [tab, setTab] = useState("all");
+  const [showPicker, setShowPicker] = useState(false);
+  const [presets, setPresets] = useState([]);
+  const load = () => api.get("/templates").then(r => setItems(r.data));
+  useEffect(() => { load(); api.get("/templates/presets").then(r => setPresets(r.data)); }, []);
+  const filtered = tab === "all" ? items : items.filter(t => t.status === tab);
+  const counts = Object.fromEntries(STATUS_TABS.map(([k]) => [k, k === "all" ? items.length : items.filter(t => t.status === k).length]));
+  const create = async name => { const r = await api.post(`/templates/from-preset/${encodeURIComponent(name)}`); nav(`/templates/${r.data.id}/edit`); };
+  const scratch = async () => { const r = await api.post("/templates", { name: "Untitled feedback form", description: "", category: "General", questions: [] }); nav(`/templates/${r.data.id}/edit`); };
   return (
     <div className="templates-bg">
-      <PageTitle eyebrow="Feedback library" title="Templates" desc="Create a focused way for customers to share what matters." action={<Link className="primary" to="/templates/new" data-testid="create-template-button"><Plus size={17} /> New template</Link>} />
-      {items.length
-        ? <div className="template-grid">{items.map(t => <TemplateCard key={t.id} t={t} />)}</div>
-        : <div className="empty-large"><div className="empty-icon"><ClipboardList size={24} /></div><h3>You haven't created a feedback template yet.</h3><p>Start from a proven format or build your own questions.</p><Link className="primary" to="/templates/new" data-testid="empty-create-template"><Plus size={17} /> Create template</Link></div>}
+      <PageTitle eyebrow="Feedback library" title="Templates" desc="Create a focused way for customers to share what matters." action={<button className="primary" onClick={() => setShowPicker(true)} data-testid="create-template-button"><Plus size={17} /> Create template</button>} />
+      <div className="library-tabs">
+        {STATUS_TABS.map(([k, label]) => (
+          <button key={k} className={tab === k ? "lib-tab active" : "lib-tab"} onClick={() => setTab(k)} data-testid={`lib-tab-${k.toLowerCase()}`}>
+            {label}<span>{counts[k] || 0}</span>
+          </button>
+        ))}
+      </div>
+      {showPicker && <TemplatePicker presets={presets} onPick={n => { setShowPicker(false); create(n); }} onScratch={() => { setShowPicker(false); scratch(); }} onClose={() => setShowPicker(false)} />}
+      {filtered.length
+        ? <div className="template-grid">{filtered.map(t => <TemplateCard key={t.id} t={t} onChange={load} />)}</div>
+        : <div className="empty-large"><div className="empty-icon"><ClipboardList size={24} /></div><h3>{tab === "all" ? "You haven't created a feedback template yet." : `No ${tab.toLowerCase()} templates.`}</h3><p>Start from a proven format or build your own questions.</p><button className="primary" onClick={() => setShowPicker(true)} data-testid="empty-create-template"><Plus size={17} /> Create template</button></div>}
     </div>
   );
 }
-function TemplateCard({ t }) {
-  const nav = useNavigate();
+
+function TemplatePicker({ presets, onPick, onScratch, onClose }) {
   return (
-    <article className="template-card" data-testid={`template-card-${t.id}`}>
-      <div className="template-card-top">
-        <span className={t.status === "PUBLISHED" ? "status published" : "status"}>{t.status === "PUBLISHED" ? <><span className="status-dot"></span> Live</> : "Draft"}</span>
-        <button className="icon-btn" onClick={() => nav(`/templates/${t.id}/edit`)} data-testid={`edit-template-${t.id}`}><ChevronRight size={18} /></button>
+    <div className="picker-overlay" onClick={onClose} data-testid="template-picker">
+      <div className="picker-sheet" onClick={e => e.stopPropagation()}>
+        <div className="picker-head"><h3>Choose a starting point</h3><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <button className="picker-scratch" onClick={onScratch} data-testid="picker-scratch"><div className="picker-mark"><FilePlus2 size={18} /></div><span><b>Start from scratch</b><small>Build your own questions and design</small></span><ChevronRight size={16} /></button>
+        <div className="picker-divider"><span>or use a prebuilt template</span></div>
+        <div className="picker-grid">
+          {presets.map(p => (
+            <button className="picker-card" key={p.name} onClick={() => onPick(p.name)} data-testid={`picker-${p.name.toLowerCase().replaceAll(" ","-")}`}>
+              <span className="picker-cat">{p.category}</span>
+              <b>{p.name}</b>
+              <small>{p.question_count} questions</small>
+              <ul>{p.questions.slice(0,3).map(q => <li key={q}>{q}</li>)}</ul>
+            </button>
+          ))}
+        </div>
       </div>
-      <h3>{t.name}</h3>
+    </div>
+  );
+}
+
+function TemplateCard({ t, onChange }) {
+  const nav = useNavigate();
+  const design = t.design || DEFAULT_DESIGN;
+  const logo = fileUrl(design.logo_file_id);
+  const act = async (verb) => {
+    try {
+      if (verb === "duplicate") { const r = await api.post(`/templates/${t.id}/duplicate`); nav(`/templates/${r.data.id}/edit`); return; }
+      if (verb === "publish") { await api.post(`/templates/${t.id}/publish`); nav(`/templates/${t.id}/publish`); return; }
+      if (verb === "unpublish") await api.post(`/templates/${t.id}/unpublish`);
+      if (verb === "archive") await api.post(`/templates/${t.id}/archive`);
+      if (verb === "delete") { if (!window.confirm("Delete this template permanently?")) return; await api.delete(`/templates/${t.id}`); }
+      onChange?.();
+    } catch (e) { alert(errorText(e)); }
+  };
+  const status = t.status || "DRAFT";
+  return (
+    <article className="template-card" style={{ borderTopColor: design.primary_color }} data-testid={`template-card-${t.id}`}>
+      <div className="template-card-top">
+        <span className={`status ${status.toLowerCase()}`}>{status === "PUBLISHED" ? <><span className="status-dot"></span> Live</> : status === "ARCHIVED" ? "Archived" : "Draft"}</span>
+        {t.category && <span className="cat-chip">{t.category}</span>}
+      </div>
+      <div className="card-brand">
+        {logo ? <img src={logo} alt="" className="card-logo" /> : <div className="card-logo-fallback" style={{ background: design.primary_color }}>{t.name[0]}</div>}
+        <h3>{t.name}</h3>
+      </div>
       <p>{t.description || "A customer feedback form ready to shape."}</p>
       <div className="template-meta">
-        <span><ClipboardList size={14} /> {t.questions.length} questions</span>
-        {t.status === "PUBLISHED" && <Link to={`/f/${t.public_slug}`} target="_blank" className="text-link">Open page <ExternalLink size={13} /></Link>}
+        <span><ClipboardList size={13} /> {t.questions?.length || 0} qs</span>
+        <span><MessageSquare size={13} /> {t.response_count || 0} resp</span>
+        <span>Updated {fmtDate(t.updated_at || t.created_at)}</span>
+      </div>
+      <div className="card-actions">
+        <button className="outline tiny" onClick={() => nav(`/templates/${t.id}/edit`)} data-testid={`edit-template-${t.id}`}>Edit</button>
+        {status === "PUBLISHED" && <Link to={`/f/${t.public_slug}`} target="_blank" className="outline tiny" data-testid={`preview-template-${t.id}`}><Eye size={13} /> Preview</Link>}
+        {status === "DRAFT" && <button className="primary tiny" onClick={() => act("publish")} data-testid={`publish-template-${t.id}`}>Publish</button>}
+        {status === "PUBLISHED" && <button className="outline tiny" onClick={() => act("unpublish")} data-testid={`unpublish-template-${t.id}`}>Unpublish</button>}
+        <button className="outline tiny" onClick={() => act("duplicate")} data-testid={`duplicate-template-${t.id}`}><Copy size={12} /></button>
+        {status !== "ARCHIVED" && <button className="outline tiny" onClick={() => act("archive")} data-testid={`archive-template-${t.id}`}><Archive size={12} /></button>}
+        <button className="outline tiny danger" onClick={() => act("delete")} data-testid={`delete-template-${t.id}`}><Trash2 size={12} /></button>
       </div>
     </article>
   );
 }
 
-/* ===== Template builder ===== */
+/* ===== Template builder (3-tab: Questions / Design / Preview) ===== */
+const CATEGORIES = ["General", "Restaurant", "Retail", "Services", "Hospitality", "Healthcare", "Other"];
+const BLANK_QUESTION = type => ({
+  question_text: type === "yesno" ? "Would you recommend us?" : type === "rating" ? "How was your overall experience?" : "Add your question",
+  question_type: type, required: true, description: "",
+  options: type === "yesno" ? ["Yes","No"] : (type === "singlechoice" || type === "multichoice") ? ["Option 1","Option 2"] : [],
+});
+
 function TemplateBuilder() {
   const { id } = useParams();
   const nav = useNavigate();
-  const [presets, setPresets] = useState([]);
+  const [tab, setTab] = useState("questions");
   const [locations, setLocations] = useState([]);
-  const [form, setForm] = useState({ name: "", description: "", questions: [], location_id: null });
+  const [form, setForm] = useState(null);
   const [selected, setSelected] = useState(null);
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState({ logo: false, bg: false });
   useEffect(() => {
-    api.get("/templates/presets").then(r => setPresets(r.data));
     api.get("/locations").then(r => setLocations(r.data));
-    if (id) api.get(`/templates/${id}`).then(r => setForm(r.data));
+    if (id) api.get(`/templates/${id}`).then(r => setForm({ ...r.data, design: { ...DEFAULT_DESIGN, ...(r.data.design || {}) } }));
+    else setForm({ name: "", description: "", category: "General", questions: [], location_id: null, design: { ...DEFAULT_DESIGN } });
   }, [id]);
-  const addQuestion = (type = "rating") => setForm({ ...form, questions: [...form.questions, { question_text: type === "yesno" ? "Would you recommend us?" : "How was your overall experience?", question_type: type, required: true, description: "", options: type === "yesno" ? ["Yes", "No"] : [] }] });
-  const save = async () => {
-    try {
-      const payload = { ...form, questions: form.questions.map(({ id: _ignore, ...q }) => q) };
-      const r = id ? await api.patch(`/templates/${id}`, payload) : await api.post("/templates", payload);
-      if (!id) nav(`/templates/${r.data.id}/edit`);
-      setForm(r.data); return r.data;
-    } catch (x) { setError(errorText(x)); return null; }
-  };
-  const publish = async () => { const saved = await save(); const target = saved?.id || form.id || id; if (!target) return; const r = await api.post(`/templates/${target}/publish`); nav(`/templates/${r.data.id}/publish`); };
-  const choosePreset = async name => { const r = await api.post(`/templates/from-preset/${encodeURIComponent(name)}`); nav(`/templates/${r.data.id}/edit`); setForm(r.data); };
+  if (!form) return <Loading />;
+  const addQuestion = type => setForm({ ...form, questions: [...form.questions, BLANK_QUESTION(type)] });
   const updateQuestion = (i, patch) => { const qs = [...form.questions]; qs[i] = { ...qs[i], ...patch }; setForm({ ...form, questions: qs }); };
   const removeQuestion = i => setForm({ ...form, questions: form.questions.filter((_, n) => n !== i) });
+  const duplicateQuestion = i => { const qs = [...form.questions]; const copy = { ...qs[i] }; delete copy.id; qs.splice(i + 1, 0, copy); setForm({ ...form, questions: qs }); };
+  const moveQuestion = (i, dir) => { const qs = [...form.questions]; const j = i + dir; if (j < 0 || j >= qs.length) return; [qs[i], qs[j]] = [qs[j], qs[i]]; setForm({ ...form, questions: qs }); };
+  const setDesign = patch => setForm({ ...form, design: { ...form.design, ...patch } });
+  const save = async () => {
+    setSaving(true); setError("");
+    try {
+      const payload = { name: form.name || "Untitled feedback form", description: form.description, category: form.category, location_id: form.location_id, design: form.design, questions: form.questions.map(({ id: _ignore, sort_order: _s, ...q }) => q) };
+      const r = id ? await api.patch(`/templates/${id}`, payload) : await api.post("/templates", payload);
+      if (!id) nav(`/templates/${r.data.id}/edit`);
+      setForm({ ...r.data, design: { ...DEFAULT_DESIGN, ...(r.data.design || {}) } });
+      setSaving(false); return r.data;
+    } catch (x) { setError(errorText(x)); setSaving(false); return null; }
+  };
+  const publish = async () => { const saved = await save(); const target = saved?.id || form.id || id; if (!target) return; try { const r = await api.post(`/templates/${target}/publish`); nav(`/templates/${r.data.id}/publish`); } catch (e) { setError(errorText(e)); } };
+  const uploadImage = async (purpose, file) => {
+    setUploading({ ...uploading, [purpose === "logo" ? "logo" : "bg"]: true });
+    const fd = new FormData(); fd.append("file", file);
+    try {
+      const r = await api.post(`/uploads?purpose=${purpose}`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+      setDesign(purpose === "logo" ? { logo_file_id: r.data.id } : { background_file_id: r.data.id });
+    } catch (e) { setError(errorText(e)); }
+    finally { setUploading({ ...uploading, [purpose === "logo" ? "logo" : "bg"]: false }); }
+  };
   return (
     <>
-      <PageTitle eyebrow="Template builder" title={id ? "Shape the questions." : "What would you like to ask?"} desc="Keep it focused. The best forms are easy to finish and easy to act on." action={<div className="button-row"><button className="outline" onClick={save} data-testid="save-template-button">Save draft</button><button className="primary" onClick={publish} data-testid="publish-template-button">Publish <ExternalLink size={16} /></button></div>} />
-      <div className="builder-layout">
-        <aside className="builder-library">
-          <p className="eyebrow">Start with a format</p>
-          <button className="preset-scratch" onClick={() => addQuestion()} data-testid="start-from-scratch"><Plus size={18} /><span><b>Start from scratch</b><small>Build your own form</small></span></button>
-          {presets.map(p => <button className="preset" key={p.name} onClick={() => choosePreset(p.name)} data-testid={`preset-${p.name.toLowerCase().replaceAll(" ", "-")}`}><span className="preset-mark">{p.name[0]}</span><span><b>{p.name}</b><small>{p.question_count} thoughtful questions</small></span><ChevronRight size={15} /></button>)}
-          {locations.length > 0 && (
-            <div className="location-pick">
-              <p className="eyebrow">Attach location</p>
-              <select value={form.location_id || ""} onChange={e => setForm({ ...form, location_id: e.target.value || null })} data-testid="template-location-select">
-                <option value="">Any location</option>
-                {locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
-              </select>
+      <PageTitle eyebrow="Template builder" title={form.name || "Untitled feedback form"} desc={form.description || "Shape the experience your customers will see."} action={
+        <div className="button-row">
+          <button className="outline" onClick={save} disabled={saving} data-testid="save-template-button">{saving ? "Saving…" : "Save draft"}</button>
+          <button className="primary" onClick={publish} disabled={saving} data-testid="publish-template-button">Publish <ExternalLink size={15} /></button>
+        </div>
+      } />
+      <div className="builder-tabs">
+        {[["questions","Questions",ClipboardList],["design","Design",Palette],["preview","Preview",Eye]].map(([k, label, Icon]) => (
+          <button key={k} className={tab === k ? "btab active" : "btab"} onClick={() => setTab(k)} data-testid={`builder-tab-${k}`}>
+            <Icon size={15} /> {label}
+          </button>
+        ))}
+      </div>
+      {tab === "questions" && (
+        <div className="builder-questions">
+          <section className="section-panel qmeta">
+            <div className="qmeta-row">
+              <label className="grow">Template name<input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Restaurant Experience" data-testid="template-name-input" /></label>
+              <label>Category<select value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} data-testid="template-category-select">{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></label>
             </div>
-          )}
-        </aside>
-        <section className="builder-canvas">
-          <div className="builder-heading">
-            <input className="title-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Untitled feedback form" data-testid="template-name-input" />
-            <textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Add a short description for customers..." data-testid="template-description-input" />
-          </div>
-          {form.questions.map((q, i) => (
-            <div className={`question-editor ${selected === i ? "focused" : ""}`} key={q.id || i} onClick={() => setSelected(i)} data-testid={`question-editor-${i}`}>
-              <div className="drag-handle">⠿</div>
-              <div className="question-content">
-                <div className="question-top">
-                  <span className="question-number">{String(i + 1).padStart(2, "0")}</span>
-                  <select value={q.question_type} onChange={e => updateQuestion(i, { question_type: e.target.value })} data-testid={`question-type-${i}`}>
-                    <option value="rating">Star rating</option>
-                    <option value="yesno">Yes / No</option>
-                    <option value="shorttext">Short text</option>
-                    <option value="longtext">Long text</option>
-                  </select>
-                  <button className="icon-btn danger" onClick={e => { e.stopPropagation(); removeQuestion(i); }} data-testid={`delete-question-${i}`}><Trash2 size={15} /></button>
+            <label>Description<textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Short line shown to customers at the top of the form." data-testid="template-description-input" /></label>
+            {locations.length > 0 && (
+              <label>Attach location (optional)<select value={form.location_id || ""} onChange={e => setForm({ ...form, location_id: e.target.value || null })} data-testid="template-location-select"><option value="">Any location</option>{locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}</select></label>
+            )}
+          </section>
+          <section className="section-panel qlist">
+            <div className="panel-head"><div><p className="eyebrow">Questions</p><h3>{form.questions.length} on this form</h3></div></div>
+            {form.questions.map((q, i) => (
+              <div className={`question-editor ${selected === i ? "focused" : ""}`} key={q.id || i} onClick={() => setSelected(i)} data-testid={`question-editor-${i}`}>
+                <div className="q-reorder">
+                  <button className="icon-btn" onClick={e => { e.stopPropagation(); moveQuestion(i, -1); }} disabled={i === 0} aria-label="Move up">▲</button>
+                  <button className="icon-btn" onClick={e => { e.stopPropagation(); moveQuestion(i, 1); }} disabled={i === form.questions.length - 1} aria-label="Move down">▼</button>
                 </div>
-                <input value={q.question_text} onChange={e => updateQuestion(i, { question_text: e.target.value })} data-testid={`question-text-${i}`} />
-                <div className="question-preview">{q.question_type === "rating" ? "☆ ☆ ☆ ☆ ☆" : q.question_type === "yesno" ? "Yes     No" : q.question_type === "longtext" ? "Your answer..." : "Short answer"}</div>
-                <label className="required-toggle"><input type="checkbox" checked={q.required} onChange={e => updateQuestion(i, { required: e.target.checked })} /> Required</label>
+                <div className="question-content">
+                  <div className="question-top">
+                    <span className="question-number">{String(i + 1).padStart(2, "0")}</span>
+                    <select value={q.question_type} onChange={e => updateQuestion(i, { question_type: e.target.value, options: e.target.value === "yesno" ? ["Yes","No"] : (e.target.value === "singlechoice" || e.target.value === "multichoice") ? (q.options?.length ? q.options : ["Option 1","Option 2"]) : [] })} data-testid={`question-type-${i}`}>
+                      <option value="rating">Star rating</option>
+                      <option value="yesno">Yes / No</option>
+                      <option value="shorttext">Short text</option>
+                      <option value="longtext">Long text</option>
+                      <option value="singlechoice">Single choice</option>
+                      <option value="multichoice">Multiple choice</option>
+                    </select>
+                    <button className="icon-btn" onClick={e => { e.stopPropagation(); duplicateQuestion(i); }} title="Duplicate" data-testid={`duplicate-question-${i}`}><Copy size={13} /></button>
+                    <button className="icon-btn danger" onClick={e => { e.stopPropagation(); removeQuestion(i); }} data-testid={`delete-question-${i}`}><Trash2 size={14} /></button>
+                  </div>
+                  <input value={q.question_text} onChange={e => updateQuestion(i, { question_text: e.target.value })} data-testid={`question-text-${i}`} placeholder="Your question text" />
+                  <input className="help-text" value={q.description || ""} onChange={e => updateQuestion(i, { description: e.target.value })} placeholder="Optional help text" data-testid={`question-desc-${i}`} />
+                  {(q.question_type === "singlechoice" || q.question_type === "multichoice") && (
+                    <div className="q-options" data-testid={`options-${i}`}>
+                      {(q.options || []).map((opt, oi) => (
+                        <div className="opt-row" key={oi}>
+                          <input value={opt} onChange={e => { const opts = [...q.options]; opts[oi] = e.target.value; updateQuestion(i, { options: opts }); }} data-testid={`option-${i}-${oi}`} />
+                          <button className="icon-btn danger" onClick={e => { e.stopPropagation(); updateQuestion(i, { options: q.options.filter((_, n) => n !== oi) }); }}><X size={13} /></button>
+                        </div>
+                      ))}
+                      <button className="add-opt" onClick={e => { e.stopPropagation(); updateQuestion(i, { options: [...(q.options || []), `Option ${(q.options?.length || 0) + 1}`] }); }} data-testid={`add-option-${i}`}><Plus size={13} /> Add option</button>
+                    </div>
+                  )}
+                  <label className="required-toggle"><input type="checkbox" checked={q.required} onChange={e => updateQuestion(i, { required: e.target.checked })} /> Required</label>
+                </div>
               </div>
+            ))}
+            <div className="add-row">
+              {[["rating","Rating"],["yesno","Yes/No"],["shorttext","Short text"],["longtext","Long text"],["singlechoice","Single choice"],["multichoice","Multi choice"]].map(([k, l]) => <button key={k} className="add-type" onClick={() => addQuestion(k)} data-testid={`add-${k}`}><Plus size={13} /> {l}</button>)}
+            </div>
+            {!form.questions.length && <div className="builder-empty"><ClipboardList size={28} /><p>No questions yet</p><small>Pick a question type above to start</small></div>}
+            {error && <div className="error">{error}</div>}
+          </section>
+        </div>
+      )}
+      {tab === "design" && <DesignTab design={form.design} setDesign={setDesign} uploading={uploading} onUpload={uploadImage} />}
+      {tab === "preview" && <PreviewTab form={form} />}
+    </>
+  );
+}
+
+function DesignTab({ design, setDesign, uploading, onUpload }) {
+  const logoRef = React.useRef(); const bgRef = React.useRef();
+  const logoUrl = fileUrl(design.logo_file_id);
+  const bgUrl = fileUrl(design.background_file_id);
+  return (
+    <div className="design-layout">
+      <section className="section-panel design-panel">
+        <div className="panel-head"><div><p className="eyebrow">Branding</p><h3>Logo & cover</h3></div><Palette size={16} /></div>
+        <div className="design-field">
+          <label>Logo</label>
+          <div className="upload-slot">
+            {logoUrl ? <img src={logoUrl} alt="Logo" className="upload-preview" /> : <div className="upload-ph"><ImageIcon size={24} /></div>}
+            <div>
+              <input ref={logoRef} type="file" accept="image/*" hidden onChange={e => e.target.files?.[0] && onUpload("logo", e.target.files[0])} data-testid="logo-input" />
+              <button className="outline tiny" onClick={() => logoRef.current.click()} disabled={uploading.logo} data-testid="upload-logo-button"><Upload size={13} /> {uploading.logo ? "Uploading…" : logoUrl ? "Replace" : "Upload"}</button>
+              {logoUrl && <button className="outline tiny danger" onClick={() => setDesign({ logo_file_id: null })} data-testid="remove-logo-button"><Trash2 size={13} /></button>}
+              <small>PNG, JPG, WEBP · up to 5MB</small>
+            </div>
+          </div>
+        </div>
+        <div className="design-field">
+          <label>Background / cover image</label>
+          <div className="upload-slot">
+            {bgUrl ? <img src={bgUrl} alt="Background" className="upload-preview wide" /> : <div className="upload-ph wide"><ImageIcon size={24} /></div>}
+            <div>
+              <input ref={bgRef} type="file" accept="image/*" hidden onChange={e => e.target.files?.[0] && onUpload("background", e.target.files[0])} data-testid="background-input" />
+              <button className="outline tiny" onClick={() => bgRef.current.click()} disabled={uploading.bg} data-testid="upload-background-button"><Upload size={13} /> {uploading.bg ? "Uploading…" : bgUrl ? "Replace" : "Upload"}</button>
+              {bgUrl && <button className="outline tiny danger" onClick={() => setDesign({ background_file_id: null })} data-testid="remove-background-button"><Trash2 size={13} /></button>}
+              <small>Shown behind the form on the public page</small>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section className="section-panel design-panel">
+        <div className="panel-head"><div><p className="eyebrow">Colors & style</p><h3>Visual tone</h3></div></div>
+        {[["Background color","background_color"],["Primary / button color","primary_color"],["Text color","text_color"],["Card background","card_background"]].map(([label, k]) => (
+          <div className="design-field color-field" key={k}>
+            <label>{label}</label>
+            <div className="color-row">
+              <input type="color" value={design[k]} onChange={e => setDesign({ [k]: e.target.value })} data-testid={`color-${k}`} />
+              <input type="text" value={design[k]} onChange={e => setDesign({ [k]: e.target.value })} className="hex-input" data-testid={`hex-${k}`} />
+            </div>
+          </div>
+        ))}
+        <div className="design-field">
+          <label>Button style</label>
+          <div className="btn-style-row">
+            {[["rounded","Rounded"],["pill","Pill"],["sharp","Sharp"]].map(([k, l]) => (
+              <button key={k} className={design.button_style === k ? "btn-style active" : "btn-style"} data-shape={k} onClick={() => setDesign({ button_style: k })} data-testid={`button-style-${k}`}>{l}</button>
+            ))}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function PreviewTab({ form }) {
+  const [viewport, setViewport] = useState("desktop");
+  return (
+    <div className="preview-wrap">
+      <div className="viewport-switch">
+        <button className={viewport === "desktop" ? "active" : ""} onClick={() => setViewport("desktop")} data-testid="viewport-desktop"><Monitor size={14} /> Desktop</button>
+        <button className={viewport === "mobile" ? "active" : ""} onClick={() => setViewport("mobile")} data-testid="viewport-mobile"><Smartphone size={14} /> Mobile</button>
+      </div>
+      <div className={`preview-frame ${viewport}`} data-testid="preview-frame">
+        <BrandedFeedback template={form} business={null} readOnly />
+      </div>
+    </div>
+  );
+}
+
+/* ===== Branded feedback renderer (shared by preview + public page) ===== */
+function BrandedFeedback({ template, business, location, readOnly, onSubmit }) {
+  const d = template.design || DEFAULT_DESIGN;
+  const logoUrl = d.logo_url || fileUrl(d.logo_file_id);
+  const bgUrl = d.background_url || fileUrl(d.background_file_id);
+  const [answers, setAnswers] = useState({});
+  const [error, setError] = useState("");
+  const set = (id, v) => setAnswers(a => ({ ...a, [id]: v }));
+  const submit = async () => {
+    if (readOnly) return;
+    setError("");
+    try { await onSubmit?.(Object.entries(answers).map(([question_id, value]) => ({ question_id, value }))); }
+    catch (x) { setError(errorText(x)); }
+  };
+  const btnRadius = d.button_style === "pill" ? "999px" : d.button_style === "sharp" ? "0px" : "7px";
+  return (
+    <div className="branded-shell" style={{ background: d.background_color, color: d.text_color, backgroundImage: bgUrl ? `linear-gradient(rgba(255,255,255,.72),rgba(255,255,255,.72)),url(${bgUrl})` : undefined, backgroundSize: "cover", backgroundPosition: "center" }}>
+      <main className="branded-form" style={{ background: d.card_background, color: d.text_color }}>
+        <div className="branded-head">
+          {logoUrl ? <img src={logoUrl} alt="" className="branded-logo" /> : <div className="branded-logo-fallback" style={{ background: d.primary_color }}>{(business?.name || template.name)?.[0] || "?"}</div>}
+          <span style={{ color: d.text_color }}>{business?.name || "Preview business"}{location && <small> · {location.name}</small>}</span>
+        </div>
+        <h1 style={{ color: d.text_color }}>{template.name || "Your feedback form"}</h1>
+        <p className="branded-desc">{template.description || "We'd love to hear about your experience."}</p>
+        <div className="branded-questions">
+          {(template.questions || []).map((q, i) => (
+            <div className="branded-q" key={q.id || i}>
+              <label>{i + 1}. {q.question_text}{q.required && <sup style={{ color: d.primary_color }}>*</sup>}</label>
+              {q.description && <small>{q.description}</small>}
+              {q.question_type === "rating" && (
+                <div className="rating-buttons">{[1,2,3,4,5].map(n => <button key={n} className={answers[q.id] === n ? "br-rating selected" : "br-rating"} style={answers[q.id] === n ? { background: d.primary_color, borderColor: d.primary_color, color: "#fff", borderRadius: btnRadius } : { borderRadius: btnRadius }} onClick={() => set(q.id, n)} data-testid={`rating-${q.id}-${n}`}>{n}<Star size={14} fill={answers[q.id] === n ? "currentColor" : "none"} /></button>)}</div>
+              )}
+              {q.question_type === "yesno" && (
+                <div className="choice-buttons">{["Yes","No"].map(v => <button key={v} className={answers[q.id] === v ? "br-choice selected" : "br-choice"} style={answers[q.id] === v ? { background: d.primary_color, borderColor: d.primary_color, color: "#fff", borderRadius: btnRadius } : { borderRadius: btnRadius }} onClick={() => set(q.id, v)} data-testid={`choice-${q.id}-${v.toLowerCase()}`}>{v}</button>)}</div>
+              )}
+              {q.question_type === "singlechoice" && (
+                <div className="choice-stack">{(q.options || []).map(opt => <button key={opt} className={answers[q.id] === opt ? "br-opt selected" : "br-opt"} style={answers[q.id] === opt ? { background: d.primary_color, borderColor: d.primary_color, color: "#fff", borderRadius: btnRadius } : { borderRadius: btnRadius }} onClick={() => set(q.id, opt)} data-testid={`single-${q.id}-${opt}`}>{opt}</button>)}</div>
+              )}
+              {q.question_type === "multichoice" && (
+                <div className="choice-stack">{(q.options || []).map(opt => { const picked = (answers[q.id] || []).includes(opt); return <button key={opt} className={picked ? "br-opt selected" : "br-opt"} style={picked ? { background: d.primary_color, borderColor: d.primary_color, color: "#fff", borderRadius: btnRadius } : { borderRadius: btnRadius }} onClick={() => set(q.id, picked ? (answers[q.id] || []).filter(o => o !== opt) : [...(answers[q.id] || []), opt])} data-testid={`multi-${q.id}-${opt}`}>{picked ? <Check size={13} /> : null}{opt}</button>; })}</div>
+              )}
+              {q.question_type === "shorttext" && <input value={answers[q.id] || ""} onChange={e => set(q.id, e.target.value)} placeholder="Your answer" data-testid={`answer-${q.id}`} style={{ borderRadius: btnRadius }} />}
+              {q.question_type === "longtext" && <textarea value={answers[q.id] || ""} onChange={e => set(q.id, e.target.value)} placeholder="Share a little more…" data-testid={`answer-${q.id}`} style={{ borderRadius: btnRadius }} />}
             </div>
           ))}
-          <button className="add-question" onClick={() => addQuestion()} data-testid="add-question-button"><Plus size={18} /> Add question</button>
-          {!form.questions.length && <div className="builder-empty"><ClipboardList size={28} /><p>Your questions will appear here</p><small>Choose a format or add your first question</small></div>}
-          {error && <div className="error">{error}</div>}
-        </section>
-        <aside className="builder-preview">
-          <div className="preview-label"><span>Live preview</span><span className="live-dot">●</span></div>
-          <div className="phone-preview">
-            <div className="phone-head"><div className="preview-logo">F</div><b>{form.name || "Your feedback form"}</b></div>
-            <p>{form.description || "We'd love to hear about your experience."}</p>
-            {form.questions.slice(0, 4).map((q, i) => <div className="preview-question" key={i}><b>{q.question_text || "Your question"}</b><span>{q.question_type === "rating" ? "☆ ☆ ☆ ☆ ☆" : q.question_type === "yesno" ? "Yes     No" : "Your answer..."}</span></div>)}
-            <button className="preview-submit">Submit feedback</button>
-          </div>
-        </aside>
-      </div>
-    </>
+        </div>
+        {error && <div className="error" data-testid="feedback-error">{error}</div>}
+        <button className="branded-submit" style={{ background: d.primary_color, color: "#fff", borderRadius: btnRadius }} onClick={submit} disabled={readOnly} data-testid="submit-feedback">Submit feedback <ChevronRight size={16} /></button>
+        {!readOnly && <span className="privacy-note">Your response is anonymous and private.</span>}
+      </main>
+    </div>
   );
 }
 
@@ -338,12 +577,14 @@ function PublishPage() {
           <div className="url-box"><span data-testid="public-url-text">{url}</span><button className="icon-btn" onClick={() => navigator.clipboard.writeText(url)} data-testid="copy-public-link"><Copy size={16} /></button></div>
           <div className="button-row">
             <a className="primary" href={url} target="_blank" rel="noreferrer" data-testid="open-public-feedback"><ExternalLink size={16} /> Open page</a>
-            <Link className="outline" to="/templates"><ClipboardList size={16} /> Back to templates</Link>
+            <Link className="outline" to={`/templates/${id}/edit`}><Palette size={16} /> Edit template</Link>
+            <Link className="outline" to="/templates"><ClipboardList size={16} /> Back to library</Link>
           </div>
         </section>
         <section className="qr-card">
           <QRCodeSVG value={url} size={156} bgColor="#ffffff" fgColor="#17352d" includeMargin data-testid="feedback-qr-code" />
           <span>Scan to open your form</span>
+          <button className="outline tiny" onClick={() => { const svg = document.querySelector('[data-testid="feedback-qr-code"]'); if (!svg) return; const data = new XMLSerializer().serializeToString(svg); const blob = new Blob([data], { type: "image/svg+xml" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `${t.name}-qr.svg`; a.click(); }} data-testid="download-qr-button"><Upload size={13} style={{ transform: "rotate(180deg)" }} /> Download QR</button>
         </section>
       </div>
     </div>
@@ -354,21 +595,17 @@ function PublishPage() {
 function PublicFeedback() {
   const { slug } = useParams();
   const [data, setData] = useState(null);
-  const [answers, setAnswers] = useState({});
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => { api.get(`/public/feedback/${slug}`).then(r => setData(r.data)).catch(() => setError("This feedback page is no longer available.")); }, [slug]);
   if (error && !data) return <div className="public-shell"><div className="thank-you"><X size={28} /><h1>{error}</h1></div></div>;
   if (!data) return <Loading />;
-  const t = data.template;
-  const set = (id, v) => setAnswers({ ...answers, [id]: v });
-  const submit = async () => {
-    try { await api.post(`/public/feedback/${slug}/responses`, { answers: Object.entries(answers).map(([question_id, value]) => ({ question_id, value })) }); setDone(true); }
-    catch (x) { setError(errorText(x)); }
+  const submit = async (answers) => {
+    await api.post(`/public/feedback/${slug}/responses`, { answers });
+    setDone(true);
   };
   if (done) return (
-    <div className="public-shell">
-      <div className="public-brand">F<span>•</span> feedback loop</div>
+    <div className="public-shell" style={{ background: data.template.design?.background_color }}>
       <div className="thank-you">
         <div className="publish-check"><Check size={27} /></div>
         <p className="eyebrow">Received with thanks</p>
@@ -377,38 +614,7 @@ function PublicFeedback() {
       </div>
     </div>
   );
-  return (
-    <div className="public-shell">
-      <div className="public-brand">F<span>•</span> feedback loop</div>
-      <main className="feedback-form">
-        <div className="business-kicker">
-          <div className="business-logo">{data.business?.name?.[0] || "B"}</div>
-          <span>{data.business?.name}{data.location && <small className="loc-chip"> · {data.location.name}</small>}</span>
-        </div>
-        <p className="eyebrow">A few honest minutes</p>
-        <h1>{t.name}</h1>
-        <p className="public-description">{t.description || "We'd love to hear about your experience."}</p>
-        <div className="public-questions">
-          {t.questions.map((q, i) => (
-            <div className="public-question" key={q.id}>
-              <label><span>{i + 1}. </span>{q.question_text}{q.required && <sup>*</sup>}</label>
-              {q.description && <small>{q.description}</small>}
-              {q.question_type === "rating"
-                ? <div className="rating-buttons">{[1, 2, 3, 4, 5].map(n => <button className={answers[q.id] === n ? "rating selected" : "rating"} onClick={() => set(q.id, n)} data-testid={`rating-${q.id}-${n}`} key={n}>{n}<Star size={16} fill={answers[q.id] === n ? "currentColor" : "none"} /></button>)}</div>
-                : q.question_type === "yesno"
-                  ? <div className="choice-buttons">{["Yes", "No"].map(v => <button className={answers[q.id] === v ? "choice selected" : "choice"} onClick={() => set(q.id, v)} data-testid={`choice-${q.id}-${v.toLowerCase()}`} key={v}>{v}{answers[q.id] === v && <Check size={15} />}</button>)}</div>
-                  : q.question_type === "longtext"
-                    ? <textarea value={answers[q.id] || ""} onChange={e => set(q.id, e.target.value)} placeholder="Share a little more, if you'd like..." data-testid={`answer-${q.id}`} />
-                    : <input value={answers[q.id] || ""} onChange={e => set(q.id, e.target.value)} placeholder="Your answer" data-testid={`answer-${q.id}`} />}
-            </div>
-          ))}
-        </div>
-        {error && <div className="error" data-testid="feedback-error">{error}</div>}
-        <button className="primary submit-feedback" onClick={submit} data-testid="submit-feedback">Submit feedback <ChevronRight size={17} /></button>
-        <span className="privacy-note">Your response is anonymous and private.</span>
-      </main>
-    </div>
-  );
+  return <BrandedFeedback template={data.template} business={data.business} location={data.location} onSubmit={submit} />;
 }
 
 /* ===== Responses list ===== */
@@ -855,7 +1061,7 @@ export default function App() {
               <Routes>
                 <Route path="/dashboard" element={<Dashboard />} />
                 <Route path="/templates" element={<Templates />} />
-                <Route path="/templates/new" element={<TemplateBuilder />} />
+                <Route path="/templates/new" element={<Templates />} />
                 <Route path="/templates/:id/edit" element={<TemplateBuilder />} />
                 <Route path="/templates/:id/publish" element={<PublishPage />} />
                 <Route path="/responses" element={<Responses />} />

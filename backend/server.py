@@ -1,12 +1,13 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, BackgroundTasks, UploadFile, File, Query
+from fastapi.responses import Response as FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
-from typing import Any, List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-import os, uuid, secrets, bcrypt, jwt, logging, asyncio, json, resend
+import os, uuid, secrets, bcrypt, jwt, logging, asyncio, json, resend, requests
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -21,6 +22,30 @@ RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 APP_BASE_URL = os.environ.get("APP_BASE_URL", "")
 WEBHOOK_CRON_SECRET = os.environ.get("WEBHOOK_CRON_SECRET", "")
+STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
+STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
+APP_NAME = "feedback-loop"
+_storage_key: Optional[str] = None
+def init_storage():
+    global _storage_key
+    if _storage_key: return _storage_key
+    if not EMERGENT_LLM_KEY: return None
+    try:
+        r = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_LLM_KEY}, timeout=30)
+        r.raise_for_status(); _storage_key = r.json()["storage_key"]; return _storage_key
+    except Exception as e: log.error(f"Storage init failed: {e}"); return None
+def put_object(path: str, data: bytes, content_type: str) -> dict:
+    key = init_storage()
+    if not key: raise HTTPException(503, "File storage is not available right now")
+    r = requests.put(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key, "Content-Type": content_type}, data=data, timeout=120)
+    r.raise_for_status(); return r.json()
+def get_object(path: str) -> tuple[bytes, str]:
+    key = init_storage()
+    if not key: raise HTTPException(503, "File storage is not available")
+    r = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    r.raise_for_status(); return r.content, r.headers.get("Content-Type", "application/octet-stream")
+IMAGE_MIME = {"image/jpeg","image/jpg","image/png","image/webp","image/gif"}
+MAX_UPLOAD_MB = 5
 if RESEND_API_KEY: resend.api_key = RESEND_API_KEY
 log = logging.getLogger("feedback")
 
@@ -37,7 +62,21 @@ class RegisterIn(BaseModel): full_name: str = Field(min_length=2); email: EmailS
 class LoginIn(BaseModel): email: EmailStr; password: str
 class WorkspaceIn(BaseModel): name: str = Field(min_length=2); business_type: str = "Other"; logo_url: str = ""; website: str = ""; location: str = ""; description: str = ""
 class QuestionIn(BaseModel): question_text: str; question_type: str = "rating"; required: bool = True; description: str = ""; options: List[str] = []
-class TemplateIn(BaseModel): name: str; description: str = ""; questions: List[QuestionIn] = []; location_id: Optional[str] = None
+class DesignIn(BaseModel):
+    logo_file_id: Optional[str] = None
+    background_file_id: Optional[str] = None
+    background_color: str = "#f5f7f4"
+    primary_color: str = "#17352d"
+    text_color: str = "#17352d"
+    card_background: str = "#ffffff"
+    button_style: Literal["rounded", "pill", "sharp"] = "rounded"
+class TemplateIn(BaseModel):
+    name: str
+    description: str = ""
+    category: str = "General"
+    questions: List[QuestionIn] = []
+    location_id: Optional[str] = None
+    design: Optional[DesignIn] = None
 class AnswerIn(BaseModel): question_id: str; value: Any
 class ResponseIn(BaseModel): answers: List[AnswerIn]
 class InviteIn(BaseModel): email: EmailStr; role: Literal["editor", "viewer"] = "editor"
@@ -130,26 +169,44 @@ async def create_workspace(data: WorkspaceIn, user=Depends(current_user)):
 
 # ---------- Templates ----------
 PRESETS = {
- "Restaurant Experience":[("How would you rate your overall experience?","rating"),("How would you rate the food quality?","rating"),("How would you rate our service?","rating"),("Would you recommend us?","yesno"),("Tell us more about your experience.","longtext")],
- "Product Purchase":[("How would you rate your purchase?","rating"),("Did the product meet your expectations?","yesno"),("What could we improve?","longtext")],
- "Service Experience":[("How would you rate our service?","rating"),("Was your issue resolved?","yesno"),("Share any additional feedback.","longtext")],
- "General Customer Feedback":[("How was your overall experience?","rating"),("Would you recommend us?","yesno"),("Tell us more.","longtext")]
+ "Restaurant Experience":{"category":"Restaurant","questions":[("How would you rate your overall experience?","rating",[]),("How would you rate the food quality?","rating",[]),("How would you rate our service?","rating",[]),("Would you recommend us?","yesno",[]),("Tell us more about your experience.","longtext",[])]},
+ "Product Review":{"category":"Retail","questions":[("How would you rate your purchase?","rating",[]),("Did the product meet your expectations?","yesno",[]),("What did you buy today?","shorttext",[]),("What could we improve?","longtext",[])]},
+ "Service Feedback":{"category":"Services","questions":[("How would you rate our service?","rating",[]),("Was your issue resolved?","yesno",[]),("Which team helped you?","singlechoice",["Front desk","Technical","Billing","Other"]),("Share any additional feedback.","longtext",[])]},
+ "Hotel Experience":{"category":"Hospitality","questions":[("How was your stay overall?","rating",[]),("How was the room cleanliness?","rating",[]),("How was check-in?","rating",[]),("What stood out?","multichoice",["Friendly staff","Great location","Comfortable bed","Clean room","Breakfast","Amenities"]),("Would you stay again?","yesno",[]),("Share any suggestions.","longtext",[])]},
+ "General Customer Feedback":{"category":"General","questions":[("How was your overall experience?","rating",[]),("Would you recommend us?","yesno",[]),("Tell us more.","longtext",[])]}
 }
+DEFAULT_DESIGN = {"logo_file_id":None,"background_file_id":None,"background_color":"#f5f7f4","primary_color":"#17352d","text_color":"#17352d","card_background":"#ffffff","button_style":"rounded"}
 def template_doc(data, ws, preset=None):
-    questions=[]
-    source = preset or [(q.question_text, q.question_type) for q in data.questions]
-    for i,(text,typ) in enumerate(source):
-        questions.append({"id":str(uuid.uuid4()),"question_text":text,"question_type":typ,"required":True,"description":"","options":["Yes","No"] if typ=="yesno" else [],"sort_order":i})
-    return {"id":str(uuid.uuid4()),"workspace_id":ws["id"],"name":data.name,"description":data.description,"status":"DRAFT","public_slug":None,"published_at":None,"questions":questions,"location_id":getattr(data,"location_id",None),"created_at":now(),"updated_at":now()}
+    questions = []
+    if preset:
+        source = [(t, qt, opts) for t, qt, opts in preset["questions"]]
+        category = preset["category"]
+    else:
+        source = [(q.question_text, q.question_type, q.options) for q in data.questions]
+        category = data.category or "General"
+    for i, item in enumerate(source):
+        text, typ, opts = item if len(item) == 3 else (item[0], item[1], [])
+        default_opts = ["Yes","No"] if typ == "yesno" else list(opts or [])
+        questions.append({"id":str(uuid.uuid4()),"question_text":text,"question_type":typ,"required":True,"description":"","options":default_opts,"sort_order":i})
+    design = (data.design.model_dump() if getattr(data, "design", None) else None) or DEFAULT_DESIGN.copy()
+    return {"id":str(uuid.uuid4()),"workspace_id":ws["id"],"name":data.name,"description":data.description,"category":category,
+            "status":"DRAFT","public_slug":None,"published_at":None,"questions":questions,
+            "location_id":getattr(data,"location_id",None),"design":design,
+            "created_at":now(),"updated_at":now()}
 
 @api.get("/templates")
 async def templates(user=Depends(current_user)):
     ws = await active_workspace(user)
-    return [] if not ws else [clean(x) async for x in db.templates.find({"workspace_id":ws["id"]},{"_id":0})]
+    if not ws: return []
+    items = []
+    async for t in db.templates.find({"workspace_id":ws["id"]},{"_id":0}):
+        count = await db.responses.count_documents({"template_id": t["id"]})
+        items.append({**t, "response_count": count})
+    return items
 
 @api.get("/templates/presets")
 async def presets(user=Depends(current_user)):
-    return [{"name":k,"question_count":len(v),"questions":[q[0] for q in v]} for k,v in PRESETS.items()]
+    return [{"name":k, "category":v["category"], "question_count":len(v["questions"]), "questions":[q[0] for q in v["questions"]]} for k,v in PRESETS.items()]
 
 @api.post("/templates")
 async def create_template(data: TemplateIn, user=Depends(current_user)):
@@ -160,7 +217,7 @@ async def create_template(data: TemplateIn, user=Depends(current_user)):
 async def create_preset(name: str, user=Depends(current_user)):
     ws = await active_workspace(user); require_role(ws, "owner", "editor")
     if name not in PRESETS: raise HTTPException(404, "Template preset not found")
-    data = TemplateIn(name=name, description="A ready-to-use feedback form.")
+    data = TemplateIn(name=name, description="A ready-to-use feedback form.", category=PRESETS[name]["category"])
     doc = template_doc(data, ws, PRESETS[name]); await db.templates.insert_one(doc); return clean(doc)
 
 @api.get("/templates/{template_id}")
@@ -168,6 +225,8 @@ async def get_template(template_id: str, user=Depends(current_user)):
     ws = await active_workspace(user)
     doc = await db.templates.find_one({"id":template_id, "workspace_id":ws["id"]},{"_id":0}) if ws else None
     if not doc: raise HTTPException(404, "Template not found")
+    doc.setdefault("design", DEFAULT_DESIGN.copy())
+    doc.setdefault("category", "General")
     return doc
 
 @api.patch("/templates/{template_id}")
@@ -176,7 +235,10 @@ async def update_template(template_id: str, data: TemplateIn, user=Depends(curre
     doc = await db.templates.find_one({"id":template_id, "workspace_id":ws["id"]},{"_id":0})
     if not doc: raise HTTPException(404, "Template not found")
     questions=[{**q.model_dump(),"id":doc["questions"][i]["id"] if i<len(doc["questions"]) else str(uuid.uuid4()),"sort_order":i} for i,q in enumerate(data.questions)]
-    await db.templates.update_one({"id":template_id},{"$set":{"name":data.name,"description":data.description,"questions":questions,"location_id":data.location_id,"updated_at":now()}})
+    design = data.design.model_dump() if data.design else doc.get("design", DEFAULT_DESIGN.copy())
+    update = {"name":data.name,"description":data.description,"category":data.category,
+              "questions":questions,"location_id":data.location_id,"design":design,"updated_at":now()}
+    await db.templates.update_one({"id":template_id},{"$set":update})
     return await db.templates.find_one({"id":template_id},{"_id":0})
 
 @api.delete("/templates/{template_id}")
@@ -193,17 +255,49 @@ async def publish(template_id: str, user=Depends(current_user)):
     if not doc: raise HTTPException(404, "Template not found")
     if not doc["name"] or not doc["questions"]: raise HTTPException(400, "Add a name and at least one question before publishing")
     slug = doc.get("public_slug") or f"{secrets.token_urlsafe(5).lower()}-{secrets.token_urlsafe(4).lower()}"
-    await db.templates.update_one({"id":template_id},{"$set":{"status":"PUBLISHED","public_slug":slug,"published_at":now()}})
+    await db.templates.update_one({"id":template_id},{"$set":{"status":"PUBLISHED","public_slug":slug,"published_at":now(),"updated_at":now()}})
     return {**doc,"status":"PUBLISHED","public_slug":slug,"published_at":now()}
 
+@api.post("/templates/{template_id}/unpublish")
+async def unpublish(template_id: str, user=Depends(current_user)):
+    ws = await active_workspace(user); require_role(ws, "owner", "editor")
+    doc = await db.templates.find_one({"id":template_id, "workspace_id":ws["id"]},{"_id":0})
+    if not doc: raise HTTPException(404, "Template not found")
+    await db.templates.update_one({"id":template_id},{"$set":{"status":"DRAFT","updated_at":now()}})
+    return {"ok":True}
+
+@api.post("/templates/{template_id}/archive")
+async def archive(template_id: str, user=Depends(current_user)):
+    ws = await active_workspace(user); require_role(ws, "owner", "editor")
+    doc = await db.templates.find_one({"id":template_id, "workspace_id":ws["id"]},{"_id":0})
+    if not doc: raise HTTPException(404, "Template not found")
+    await db.templates.update_one({"id":template_id},{"$set":{"status":"ARCHIVED","public_slug":None,"updated_at":now()}})
+    return {"ok":True}
+
+@api.post("/templates/{template_id}/duplicate")
+async def duplicate_template(template_id: str, user=Depends(current_user)):
+    ws = await active_workspace(user); require_role(ws, "owner", "editor")
+    doc = await db.templates.find_one({"id":template_id, "workspace_id":ws["id"]},{"_id":0})
+    if not doc: raise HTTPException(404, "Template not found")
+    new_doc = {**doc, "id":str(uuid.uuid4()), "name":f"{doc['name']} - Copy", "status":"DRAFT", "public_slug":None, "published_at":None, "created_at":now(), "updated_at":now()}
+    new_doc["questions"] = [{**q, "id":str(uuid.uuid4())} for q in doc.get("questions", [])]
+    await db.templates.insert_one(new_doc); return clean(new_doc)
+
 # ---------- Public feedback ----------
+def file_url(file_id: Optional[str]) -> Optional[str]:
+    if not file_id: return None
+    base = APP_BASE_URL.rstrip("/") if APP_BASE_URL else ""
+    return f"{base}/api/files/{file_id}"
+
 @api.get("/public/feedback/{slug}")
 async def public_feedback(slug: str):
     doc = await db.templates.find_one({"public_slug":slug, "status":"PUBLISHED"},{"_id":0})
     if not doc: raise HTTPException(404, "This feedback page is no longer available")
     ws = await db.workspaces.find_one({"id":doc["workspace_id"]},{"_id":0})
     loc = await db.locations.find_one({"id":doc.get("location_id")},{"_id":0}) if doc.get("location_id") else None
-    return {"template":doc, "business":ws, "location":loc}
+    design = doc.get("design") or DEFAULT_DESIGN.copy()
+    design = {**design, "logo_url": file_url(design.get("logo_file_id")), "background_url": file_url(design.get("background_file_id"))}
+    return {"template":{**doc, "design": design}, "business":ws, "location":loc}
 
 async def analyze_sentiment(response_id: str, workspace_id: str, comment: str):
     """Analyze text with Emergent LLM and store sentiment on the response."""
@@ -238,7 +332,8 @@ async def submit_feedback(slug: str, data: ResponseIn, background: BackgroundTas
     for a in data.answers:
         if a.question_id not in qmap: raise HTTPException(400, "Invalid question")
         q = qmap[a.question_id]
-        if q["required"] and (a.value is None or str(a.value).strip()==""): raise HTTPException(400, "Please complete all required questions")
+        empty = a.value is None or (isinstance(a.value, str) and not a.value.strip()) or (isinstance(a.value, list) and not a.value)
+        if q["required"] and empty: raise HTTPException(400, "Please complete all required questions")
         answers.append({"id":str(uuid.uuid4()),"question_id":a.question_id,"value":a.value})
         if q["question_type"] in ("longtext","shorttext") and isinstance(a.value, str) and a.value.strip():
             comment_text += a.value.strip() + " "
@@ -514,6 +609,35 @@ async def remove_member(member_id: str, user=Depends(current_user)):
     if result.deleted_count == 0: raise HTTPException(404, "Member not found")
     return {"ok":True}
 
+# ---------- File uploads (logo / background images) ----------
+@api.post("/uploads")
+async def upload_file(file: UploadFile = File(...), purpose: str = Query("logo"), user=Depends(current_user)):
+    ws = await active_workspace(user); require_role(ws, "owner", "editor")
+    content_type = (file.content_type or "").lower()
+    if content_type not in IMAGE_MIME: raise HTTPException(400, "Please upload a PNG, JPG, WEBP or GIF image")
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_MB * 1024 * 1024: raise HTTPException(400, f"File is too large — max {MAX_UPLOAD_MB}MB")
+    if not data: raise HTTPException(400, "The uploaded file is empty")
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else "bin"
+    file_id = str(uuid.uuid4())
+    path = f"{APP_NAME}/{ws['id']}/{file_id}.{ext}"
+    try: result = await asyncio.to_thread(put_object, path, data, content_type)
+    except HTTPException: raise
+    except Exception as e: log.error(f"upload failed: {e}"); raise HTTPException(502, "Could not upload the file — please try again")
+    doc = {"id":file_id,"workspace_id":ws["id"],"storage_path":result["path"],"original_filename":file.filename or "",
+           "content_type":content_type,"size":len(data),"purpose":purpose,"is_deleted":False,"created_at":now()}
+    await db.files.insert_one(doc)
+    return {"id":file_id, "url":file_url(file_id), "size":len(data), "content_type":content_type}
+
+@api.get("/files/{file_id}")
+async def serve_file(file_id: str):
+    """Public read — file IDs are UUIDs (unguessable) and may need to render on public feedback pages."""
+    doc = await db.files.find_one({"id":file_id, "is_deleted":False},{"_id":0})
+    if not doc: raise HTTPException(404, "File not found")
+    try: data, ct = await asyncio.to_thread(get_object, doc["storage_path"])
+    except Exception as e: log.error(f"serve_file {file_id} failed: {e}"); raise HTTPException(502, "Could not serve this file")
+    return FileResponse(content=data, media_type=doc.get("content_type") or ct, headers={"Cache-Control":"public, max-age=3600"})
+
 # ---------- Weekly digest cron ----------
 async def build_digest_html(ws, stats):
     """Return a simple inline-styled HTML email body."""
@@ -600,5 +724,8 @@ async def indexes():
     await db.actions.create_index([("workspace_id",1),("status",1),("created_at",-1)])
     await db.actions.create_index([("response_id",1),("source",1)])
     await db.digest_runs.create_index("run_id", unique=True)
+    await db.files.create_index([("workspace_id",1),("is_deleted",1)])
+    try: await asyncio.to_thread(init_storage); log.info("Object storage initialized")
+    except Exception as e: log.warning(f"Object storage init skipped: {e}")
 @app.on_event("shutdown")
 async def shutdown(): client.close()
