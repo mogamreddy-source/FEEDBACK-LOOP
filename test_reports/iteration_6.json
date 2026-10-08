@@ -1,0 +1,38 @@
+{
+  "summary": "Phase 3 testing completed. Backend: 9/9 new Phase 3 pytest tests PASS (cron auth + background work + db.digest_runs/digest_sends writes + dedupe; auto AI action on negative response via public submit + no duplicate on reanalyze; Actions CRUD + status transitions + self-claim + viewer 403; response notes CRUD + 1000-char + empty validation + tenant isolation 404 + notes appear in /responses/{id} payload; analytics?location_id= filtering + /analytics/by-location). Phase 2 regression suite still passes 6/6. Frontend: login OK; nav-actions, templates-bg wrapper, kanban-board with 3 columns (kanban-open/kanban-in_progress/kanban-done), create/claim/move/delete manual action, analytics-location-filter + location-breakdown with 3 options, notes-section with note-input + add-note-button all render and function correctly against the backend. Fixed one spec-contract bug in server.py (unassigned analytics bucket).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/analytics/by-location", "issue": "FIXED — the 'Unassigned' bucket was returned even when total=0, violating the spec that said it should only appear when it has data. Changed the filter in analytics_by_location from `if b['total']==0 and key is not None: continue` to `if b['total']==0: continue`. Verified by test_phase3.TestLocationAnalytics.test_filter_and_by_location."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase3.py",
+    "/app/backend/tests/test_phase2.py",
+    "/app/test_reports/pytest/phase3_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 605 LOC — route modules for actions/notes/digest should be split out into submodules before more surface area is added.",
+    "run_weekly_digest sets `started_at` BEFORE finishing. If a worker crashes mid-run, the row is left orphaned (no `finished_at`) and the dedupe check still skips subsequent runs with the same run_id. Consider a status field + TTL fallback, or move the dedupe `insert` to after success.",
+    "auto_action titles are built from AI summary; the `response_id+source=auto` uniqueness relies on an application-level find_one rather than a unique index (there IS an index on (response_id, source) but it's NOT unique). Under high concurrency two reanalyze calls could both pass the find_one and create duplicates. Low risk here (single-worker + background tasks) but worth hardening with a unique partial index.",
+    "The reanalyze path always re-runs AI even when the stored sentiment hasn't changed, so the auto-action guard is doing double duty — fine, but means repeated calls will cost LLM tokens with no new effect. Consider skipping when ai.analyzed_at is < 1 minute old."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (analytics_by_location unassigned-bucket filter)",
+    "/app/backend/tests/test_phase3.py (new)",
+    "/app/test_reports/pytest/phase3_results.xml"
+  ],
+  "success_rate": {"backend": "100% (9/9 Phase 3 + 6/6 Phase 2 regression)", "frontend": "100% (nav-actions, templates-bg, kanban board create/claim/move/delete, analytics location filter + breakdown, response team notes CRUD all verified via Playwright against prod URL)"},
+  "test_credentials": "demo@example.com / Demo1234! (seeded via `python /app/backend/seed.py --fresh`)",
+  "seed_data_creation": "Re-ran `python /app/backend/seed.py --fresh` to clear earlier test pollution before testing. Submitted one extra TEST negative public response during tests which produced an auto action (confirmed) — ensure next agent re-seeds if clean state matters.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Phase 3 pytest suite at /app/backend/tests/test_phase3.py — run with REACT_APP_BACKEND_URL in env and `-o addopts=` to disable xdist. It requires MONGO_URL + DB_NAME + WEBHOOK_CRON_SECRET from /app/backend/.env (loaded via dotenv). The cron test waits up to ~10s for background task; the negative-sentiment test waits up to 25s for the LLM. If RESEND_API_KEY stays empty the digest_sends rows will have sent=False — that's correct per the problem brief. The server.py now contains a small fix on the by-location analytics unassigned-bucket filter.",
+  "rca of the issue": "GET /api/analytics/by-location was including the Unassigned (location_id=null) bucket even when it contained zero responses. The brief explicitly required Unassigned to appear only when it has data. The condition `if b['total']==0 and key is not None: continue` whitelisted the null key, so the empty-list case still emitted an Unassigned row with total:0, average:0, sentiment:{0,0,0}. Reproduction: with the demo seed (all 8 responses assigned to locations), GET /api/analytics/by-location returned 3 rows (2 locations + Unassigned with total=0). Mitigation applied in server.py: drop the `and key is not None` so any zero-total bucket is hidden. Verified by test_phase3.TestLocationAnalytics."
+}

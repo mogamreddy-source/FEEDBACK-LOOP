@@ -339,7 +339,7 @@ async def analytics_by_location(user=Depends(current_user)):
         if s in b["sentiment"]: b["sentiment"][s] += 1
     out = []
     for key, b in buckets.items():
-        if b["total"] == 0 and key is not None: continue  # hide empty named locations only
+        if b["total"] == 0: continue  # hide empty buckets (including Unassigned)
         out.append({"location_id":key, "location":b["location"], "total":b["total"],
                     "average":round(sum(b["ratings"])/len(b["ratings"]),1) if b["ratings"] else 0,
                     "sentiment":b["sentiment"]})

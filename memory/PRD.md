@@ -4,40 +4,39 @@
 Build a realistic production-quality customer feedback SaaS POC proving the complete loop: owner registration, business setup, feedback template creation and customization, preview, publish, public URL and QR sharing, anonymous customer feedback submission, persistence, owner responses, and basic analytics. The provided React/FastAPI/MongoDB environment was selected over the requested Next.js/PostgreSQL stack so the app runs in the supplied workspace.
 
 ## Architecture decisions
-- React 19 + React Router + Tailwind-compatible CSS for the responsive owner and customer experiences.
-- FastAPI REST API with MongoDB persistence using the protected `MONGO_URL` and `DB_NAME` values.
-- JWT bearer access token with an httpOnly cookie fallback; tenant checks use the authenticated owner's workspace ID.
-- Templates store normalized question records and responses store answer records linked by question IDs.
-- Public pages use secure random slugs; QR codes encode the actual browser URL.
-- Phase 2: role-based access via `active_workspace` + `require_role`, workspace_members / locations collections, AI sentiment analysis via Emergent LLM (OpenAI gpt-5.4) as a FastAPI BackgroundTask, Resend email invites with copy-link fallback when API key is empty.
+- React 19 + React Router + Tailwind-compatible CSS for responsive owner & customer experiences.
+- FastAPI REST API with MongoDB persistence (protected `MONGO_URL` / `DB_NAME`).
+- JWT bearer access token with an httpOnly cookie fallback; tenant checks go through `active_workspace` + `require_role`.
+- Templates store normalized question records; responses store answer records linked by question IDs; private notes embedded on response doc.
+- Public pages use secure random slugs with partial-filter unique index; QR codes encode actual browser URL.
+- AI sentiment via Emergent LLM key (OpenAI gpt-5.4) in FastAPI BackgroundTask; negative sentiment auto-creates an action card.
+- Resend email with copy-link fallback when RESEND_API_KEY is empty.
+- Weekly digest driven by Emergent platform cron at `.emergent/crons.yml` → `/api/cron/weekly-digest` (Bearer `WEBHOOK_CRON_SECRET`, enqueues to BackgroundTask, idempotent via `digest_runs`).
 
 ## User personas
-- Business owner: creates workspace, builds and publishes forms, reads responses, invites teammates, manages multiple locations.
-- Team member (editor/viewer): accepts invitation, works inside the owner's workspace with role-limited actions.
-- Customer: opens a public link without an account, gives a rating and optional written feedback.
+- Business owner: full workspace control, invites team, manages locations, sees digest.
+- Editor/Viewer: scoped actions inside the owner's workspace.
+- Customer: anonymous public submission.
 
 ## Core requirements (static)
-- Authenticated owner workspace, templates, questions, publishing, sharing, responses, and analytics.
+- Register → workspace → template → publish → public submit → persisted → dashboard → analytics (end-to-end).
 - Public mobile-first form without customer login.
-- Team members with role-based access, multiple business locations, AI sentiment analysis.
+- Phase 2: team members (roles), multiple locations, AI sentiment.
+- Phase 3: weekly digest email, AI action cards, per-location analytics, team private notes.
 
 ## What's been implemented
-- 2026-10-08: Built MVP — auth, workspace, template builder, publishing, QR, public submit, dashboard, analytics.
-- 2026-10-08: Added seed command (`python /app/backend/seed.py --fresh`) creating demo owner, ABC Restaurant workspace, 2 locations, published template with 5 questions, 8 pre-analyzed responses.
-- 2026-10-08: Added team members CRUD (invite/accept/role update/remove) with Resend email + copy-link fallback and role-based route guards.
-- 2026-10-08: Added multiple business locations CRUD with optional attachment on templates.
-- 2026-10-08: Added AI sentiment analysis (positive/neutral/negative + summary + topics) via Emergent LLM key on public response submission, with manual re-analyze endpoint.
-- 2026-10-08: Added Response Detail page, sentiment pulse on Dashboard, AI sentiment + topics on Analytics, filter pills on Responses list.
-- 2026-10-08: Fixed draft template `public_slug` sparse index collision via `partialFilterExpression`.
-- 2026-10-08: Testing agent iteration 5 — 8/8 backend + full frontend E2E pass.
+- 2026-10-08: Phase 1 MVP — auth, workspace, builder, publishing, QR, public submit, dashboard, analytics.
+- 2026-10-08: Phase 2 — team invites (Resend + copy-link), locations CRUD, AI sentiment, role-based access, seed command.
+- 2026-10-08: Phase 3 — weekly digest email cron, auto AI action cards on negative sentiment + manual Kanban board (/actions), per-location analytics (filter + breakdown), private team notes on each response, visual background on /templates page.
+- 2026-10-08: Testing iteration 6 — 9/9 Phase 3 backend + 6/6 Phase 2 regression + 100% frontend E2E pass.
 
 ## Prioritized backlog
-- P0: Complete MVP flow + Phase 2 (team, locations, AI) — DONE.
-- P1: Refactor `server.py` and `App.js` into feature-scoped files once the surface grows further.
-- P1: Configure a production RESEND_API_KEY so invite emails actually deliver.
-- P2: Scheduled reminders, per-location analytics breakdown, AI-recommended actions on negative feedback, workspace profile editing.
+- P0: Phases 1–3 DONE.
+- P1: Configure a real `RESEND_API_KEY` so digest + invite emails deliver (code path verified; email_sent currently False by design).
+- P1: Refactor server.py & App.js into feature modules — surface area has grown past the single-file comfort zone.
+- P2: Per-location drill-down drill-into responses, assignee avatars with real @-mention, drag-and-drop kanban, AI-recommended canned replies.
 
 ## Remaining next tasks
-- Hook up a real Resend API key.
-- Per-location analytics drill-down.
-- Response-level reply/notes for the team.
+- Real `RESEND_API_KEY`.
+- Response filters on `/responses` by date range + rating.
+- POST /api/responses/{id}/notes should also create an audit record if the response is linked to an action card.
